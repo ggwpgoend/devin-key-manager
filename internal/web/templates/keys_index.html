@@ -143,6 +143,9 @@
                   hx-post="/keys/{{.ID}}/check"
                   hx-swap="none"
                   title="Validate this key against the Devin API.">check</button>
+          <button class="ml-3 text-xs text-slate-300 hover:text-white pr16-key-history"
+                  data-id="{{.ID}}" data-label="{{.Label}}"
+                  title="Show this key's lifecycle timeline.">history</button>
           <button class="ml-3 text-xs text-slate-300 hover:text-white"
                   hx-get="/keys/{{.ID}}/edit"
                   hx-target="#dialog"
@@ -165,5 +168,22 @@
     </tbody>
   </table>
 </div>
+<script>
+// PR-16: key lifecycle history modal. Reads /api/keys/{id}/history and
+// renders a vertical timeline.
+document.querySelectorAll('.pr16-key-history').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const id = btn.dataset.id, label = btn.dataset.label;
+    const r = await fetch('/api/keys/'+id+'/history');
+    if (!r.ok) return;
+    const j = await r.json();
+    const dialog = document.getElementById('dialog');
+    if (!dialog) return;
+    const events = (j.events || []).map(e => '<li class="border-l-2 border-slate-700 pl-3 pb-2"><div class="text-xs font-mono text-slate-500">'+(e.at||'')+'</div><div class="text-sm text-slate-200">'+e.kind+'</div><div class="text-xs text-slate-400">'+escapeHTML(e.message||'')+'</div></li>').join('');
+    dialog.innerHTML = '<div class="fixed inset-0 z-40 flex items-start justify-center bg-slate-950/70 backdrop-blur-sm pt-16"><div class="w-full max-w-xl rounded-xl border border-slate-700 bg-slate-900 shadow-xl"><div class="flex items-center justify-between border-b border-slate-800 px-5 py-4"><h2 class="text-base font-semibold">History · '+escapeHTML(label||id)+'</h2><button class="text-slate-400 hover:text-white" onclick="document.getElementById(\'dialog\').innerHTML=\'\'">×</button></div><ul class="space-y-1 px-5 py-5 text-sm">'+(events||'<li class="text-slate-500">no events</li>')+'</ul></div></div>';
+  });
+});
+function escapeHTML(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c])); }
+</script>
 {{end}}
 {{end}}

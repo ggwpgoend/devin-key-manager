@@ -308,11 +308,87 @@
       }
 
       function showNotification(e) {
+        // PR-16: render an in-page action dock so click-to-action buttons
+        // (e.actions) work even on browsers that don't support the
+        // service-worker Notification actions field.
+        renderInlineToast(e);
         if (!("Notification" in window) || Notification.permission !== "granted") return;
         const opts = { body: e.body || "", tag: "devinmgr-" + e.id };
         const n = new Notification(e.title || "devin-key-manager", opts);
         if (e.url) {
           n.onclick = () => { window.focus(); window.location.href = e.url; };
+        }
+      }
+
+      // PR-16: in-page toast dock. Lives bottom-right, max 5 visible at a
+      // time. Each toast can carry click-to-action buttons (Approve/
+      // Reject/etc.). Stays for 12 s unless it has actions, in which case
+      // it sticks until dismissed.
+      function ensureToastDock() {
+        let dock = document.getElementById("devinmgr-toasts");
+        if (dock) return dock;
+        dock = document.createElement("div");
+        dock.id = "devinmgr-toasts";
+        dock.style.cssText = "position:fixed;right:1rem;bottom:1rem;z-index:60;display:flex;flex-direction:column;gap:.5rem;max-width:22rem;";
+        document.body.appendChild(dock);
+        return dock;
+      }
+      function renderInlineToast(e) {
+        const dock = ensureToastDock();
+        // Cap the dock at 5 to avoid runaway burst spam.
+        while (dock.children.length >= 5) dock.removeChild(dock.firstChild);
+        const card = document.createElement("div");
+        card.style.cssText = "background:rgba(16,21,30,.92);color:#e2e8f0;border:1px solid #1f2937;border-radius:.5rem;padding:.75rem;font-size:.875rem;box-shadow:0 4px 16px rgba(0,0,0,.4);";
+        const title = document.createElement("div");
+        title.style.cssText = "font-weight:600;color:#cbd5e1;";
+        title.textContent = e.title || "devin-key-manager";
+        card.appendChild(title);
+        if (e.body) {
+          const body = document.createElement("div");
+          body.style.cssText = "margin-top:.25rem;color:#94a3b8;white-space:pre-wrap;";
+          body.textContent = e.body;
+          card.appendChild(body);
+        }
+        const actions = Array.isArray(e.actions) ? e.actions : [];
+        if (actions.length || e.url) {
+          const row = document.createElement("div");
+          row.style.cssText = "margin-top:.5rem;display:flex;flex-wrap:wrap;gap:.375rem;";
+          actions.forEach(a => {
+            const btn = document.createElement("button");
+            btn.textContent = a.label || "open";
+            const accent = a.style === "danger" ? "#b91c1c"
+              : a.style === "ghost" ? "transparent"
+              : "#4a7a9b";
+            btn.style.cssText = "border-radius:.375rem;padding:.25rem .5rem;font-size:.75rem;border:1px solid "+accent+";background:"+(a.style==="ghost"?"transparent":accent)+";color:"+(a.style==="ghost"?accent:"#fff")+";cursor:pointer;";
+            btn.addEventListener("click", async () => {
+              btn.disabled = true; btn.textContent = "…";
+              try {
+                const m = (a.method || "POST").toUpperCase();
+                const r = await fetch(a.url, { method: m, headers: { "Accept": "application/json" } });
+                btn.textContent = r.ok ? "✓" : "✗";
+              } catch (_) { btn.textContent = "✗"; }
+              setTimeout(() => card.remove(), 800);
+            });
+            row.appendChild(btn);
+          });
+          if (e.url) {
+            const btn = document.createElement("a");
+            btn.textContent = "open";
+            btn.href = e.url;
+            btn.style.cssText = "border-radius:.375rem;padding:.25rem .5rem;font-size:.75rem;color:#7dd3fc;text-decoration:none;border:1px solid #1e293b;";
+            row.appendChild(btn);
+          }
+          card.appendChild(row);
+        }
+        const close = document.createElement("button");
+        close.textContent = "×";
+        close.style.cssText = "position:absolute;top:.25rem;right:.5rem;background:transparent;border:0;color:#64748b;font-size:1rem;cursor:pointer;";
+        close.addEventListener("click", () => card.remove());
+        card.style.position = "relative";
+        card.appendChild(close);
+        dock.appendChild(card);
+        if (!actions.length) {
+          setTimeout(() => { if (card.parentElement) card.remove(); }, 12000);
         }
       }
 

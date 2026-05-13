@@ -10,6 +10,7 @@ package notifications
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -40,6 +41,17 @@ type Event struct {
 	RelatedTaskID    string
 	RelatedSessionID string
 	CreatedAt        time.Time
+	// Actions is the parsed click-to-action list (PR-16). Empty slice
+	// when the event has no inline actions.
+	Actions []Action
+}
+
+// Action is one button on a notification (PR-16 / F52).
+type Action struct {
+	Label  string `json:"label"`
+	URL    string `json:"url"`
+	Method string `json:"method"`
+	Style  string `json:"style,omitempty"` // "primary" | "ghost" | "danger"
 }
 
 // Repo persists Event rows.
@@ -61,6 +73,8 @@ type AppendInput struct {
 	URL              string
 	RelatedTaskID    string
 	RelatedSessionID string
+	// Actions surfaces inline click-to-action buttons (PR-16).
+	Actions []Action
 }
 
 // Append writes a new event. Returns the assigned ID.
@@ -72,12 +86,16 @@ func (r *Repo) Append(ctx context.Context, in AppendInput) (int64, error) {
 		in.Kind = KindSystem
 	}
 	now := r.now().UTC()
+	actionsJSON, err := marshalActions(in.Actions)
+	if err != nil {
+		return 0, fmt.Errorf("notifications: marshal actions: %w", err)
+	}
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO notification_events
-		    (kind, title, body, url, related_task_id, related_session_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		    (kind, title, body, url, related_task_id, related_session_id, created_at, actions_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(in.Kind), in.Title, in.Body, in.URL,
-		nullIfEmpty(in.RelatedTaskID), nullIfEmpty(in.RelatedSessionID), now,
+		nullIfEmpty(in.RelatedTaskID), nullIfEmpty(in.RelatedSessionID), now, actionsJSON,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("notifications: insert: %w", err)
@@ -115,7 +133,8 @@ func (r *Repo) Since(ctx context.Context, afterID int64, limit int) ([]Event, er
 		`SELECT id, kind, title, body, url,
 		        COALESCE(related_task_id, ''),
 		        COALESCE(related_session_id, ''),
-		        created_at
+		        created_at,
+		        COALESCE(actions_json, '')
 		 FROM notification_events
 		 WHERE id > ?
 		 ORDER BY id ASC
@@ -126,13 +145,10 @@ func (r *Repo) Since(ctx context.Context, afterID int64, limit int) ([]Event, er
 	defer rows.Close()
 	var out []Event
 	for rows.Next() {
-		var e Event
-		var kindStr string
-		if err := rows.Scan(&e.ID, &kindStr, &e.Title, &e.Body, &e.URL,
-			&e.RelatedTaskID, &e.RelatedSessionID, &e.CreatedAt); err != nil {
-			return nil, fmt.Errorf("notifications: scan: %w", err)
+		e, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
 		}
-		e.Kind = Kind(kindStr)
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -147,7 +163,8 @@ func (r *Repo) Recent(ctx context.Context, limit int) ([]Event, error) {
 		`SELECT id, kind, title, body, url,
 		        COALESCE(related_task_id, ''),
 		        COALESCE(related_session_id, ''),
-		        created_at
+		        created_at,
+		        COALESCE(actions_json, '')
 		 FROM notification_events
 		 ORDER BY id DESC
 		 LIMIT ?`, limit)
@@ -157,16 +174,52 @@ func (r *Repo) Recent(ctx context.Context, limit int) ([]Event, error) {
 	defer rows.Close()
 	var out []Event
 	for rows.Next() {
-		var e Event
-		var kindStr string
-		if err := rows.Scan(&e.ID, &kindStr, &e.Title, &e.Body, &e.URL,
-			&e.RelatedTaskID, &e.RelatedSessionID, &e.CreatedAt); err != nil {
-			return nil, fmt.Errorf("notifications: scan: %w", err)
+		e, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
 		}
-		e.Kind = Kind(kindStr)
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+func scanEvent(rows interface {
+	Scan(dest ...any) error
+}) (Event, error) {
+	var (
+		e          Event
+		kindStr    string
+		actionsRaw string
+	)
+	if err := rows.Scan(&e.ID, &kindStr, &e.Title, &e.Body, &e.URL,
+		&e.RelatedTaskID, &e.RelatedSessionID, &e.CreatedAt, &actionsRaw); err != nil {
+		return Event{}, fmt.Errorf("notifications: scan: %w", err)
+	}
+	e.Kind = Kind(kindStr)
+	e.Actions = unmarshalActions(actionsRaw)
+	return e, nil
+}
+
+func marshalActions(actions []Action) (string, error) {
+	if len(actions) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(actions)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func unmarshalActions(raw string) []Action {
+	if raw == "" {
+		return nil
+	}
+	var out []Action
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func nullIfEmpty(s string) any {

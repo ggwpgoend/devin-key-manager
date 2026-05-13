@@ -1,0 +1,12 @@
+-- PR-16 / roadmap F52: click-to-action notifications.
+--
+-- The original notification_events table only stored title/body/url. The
+-- click-target was a single URL; the user couldn't approve/reject/snooze
+-- without leaving the toast.
+--
+-- We add a single JSON-serialised actions list per event. Schema is:
+--   [{"label":"Approve","url":"/path","method":"POST","style":"primary"},
+--    {"label":"Snooze","url":"/path","method":"POST","style":"ghost"}]
+-- The web layer renders these as buttons in the in-page notification
+-- dock; service-worker driven OS-level buttons are best-effort on top.
+ALTER TABLE notification_events ADD COLUMN actions_json TEXT NOT NULL DEFAULT '';

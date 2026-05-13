@@ -294,6 +294,14 @@ func (s *Server) Handler() http.Handler {
 	})
 	r.Put("/api/tasks/{id}/tags", s.handleSetTaskTags)
 
+	// PR-16: lint-on-incoming, key lifecycle history, notification dispatch.
+	r.Get("/api/artifacts/{id}/lint", s.handleArtifactLint)
+	r.Get("/api/keys/{id}/history", s.handleKeyHistory)
+	r.Post("/api/notifications/dispatch", s.handleNotificationDispatch)
+	// PR-16: JSON endpoint for the browser extension to POST keys to.
+	r.Post("/api/keys", s.handleAPIKeysCreate)
+	r.Options("/api/keys", s.handleAPIKeysCreate)
+
 	r.Route("/pipeline-runs", func(r chi.Router) {
 		r.Get("/{run_id}", s.handlePipelineRunDetail)
 		r.Post("/{run_id}/rollback", s.handlePipelineRunRollback)
