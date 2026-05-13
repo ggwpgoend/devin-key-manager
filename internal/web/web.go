@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/ggwpgoend/devin-key-manager/internal/aisearch"
 	"github.com/ggwpgoend/devin-key-manager/internal/artifacts"
 	"github.com/ggwpgoend/devin-key-manager/internal/attachments"
 	"github.com/ggwpgoend/devin-key-manager/internal/devin"
@@ -283,6 +284,15 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/top-keys", s.handleObservabilityTopKeys)
 		r.Get("/session-graph/{task_id}", s.handleObservabilitySessionGraph)
 	})
+
+	// PR-15: AI/search helpers. All deterministic local computation.
+	r.Route("/api/ai", func(r chi.Router) {
+		r.Post("/autotag", s.handleAIAutotag)
+		r.Post("/tokens", s.handleAITokens)
+		r.Get("/suggest", s.handleAISuggest)
+		r.Get("/similar-tasks", s.handleAISimilarTasks)
+	})
+	r.Put("/api/tasks/{id}/tags", s.handleSetTaskTags)
 
 	r.Route("/pipeline-runs", func(r chi.Router) {
 		r.Get("/{run_id}", s.handlePipelineRunDetail)
@@ -589,6 +599,13 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("start task failed", "err", err)
 		s.renderPartial(w, "task_form", dialogData{Error: msg})
 		return
+	}
+	// PR-15: best-effort auto-tag from the prompt. Don't block task
+	// creation on a tags failure — the user can always edit tags later.
+	if tags := aisearch.AutoTag(in.Prompt); len(tags) > 0 && result.Task.ID != "" {
+		if err := s.tasks.SetTags(r.Context(), result.Task.ID, strings.Join(tags, ",")); err != nil {
+			s.logger.Warn("autotag set failed", "task_id", result.Task.ID, "err", err)
+		}
 	}
 	s.redirect(w, r, "/sessions/"+result.Session.ID)
 }

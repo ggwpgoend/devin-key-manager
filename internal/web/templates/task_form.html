@@ -18,10 +18,57 @@
       </div>
       <div>
         <label class="block text-xs font-medium uppercase tracking-wider text-slate-400">Prompt</label>
-        <textarea name="prompt" rows="6" required
+        <textarea name="prompt" rows="6" required id="task-prompt-textarea"
           placeholder="Describe what you want Devin to do. Treat this like the opening message in a chat."
           class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"></textarea>
+        <div class="mt-1 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+          <span id="task-ai-tokens">0 chars · ≈0 tokens</span>
+          <span id="task-ai-tags" class="flex flex-wrap gap-1"></span>
+        </div>
+        <details class="mt-2 text-xs text-slate-500">
+          <summary class="cursor-pointer text-slate-400">Suggestions from history &amp; seeds</summary>
+          <ul id="task-ai-suggest" class="mt-1 space-y-1 max-h-40 overflow-y-auto"></ul>
+        </details>
       </div>
+      <script>
+      (function(){
+        const ta = document.getElementById('task-prompt-textarea');
+        if (!ta) return;
+        const tokEl = document.getElementById('task-ai-tokens');
+        const tagEl = document.getElementById('task-ai-tags');
+        const suggEl = document.getElementById('task-ai-suggest');
+        let timer = null;
+        function refresh(){
+          const text = ta.value;
+          fetch('/api/ai/tokens', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text})})
+            .then(r => r.ok ? r.json() : null).then(j => {
+              if (!j) return;
+              const warn = j.over_warning ? '<span class="text-amber-400 ml-1">heavy</span>' : '';
+              tokEl.innerHTML = (j.chars||0)+' chars · ≈'+(j.tokens||0)+' tokens'+warn;
+            });
+          fetch('/api/ai/autotag', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text})})
+            .then(r => r.ok ? r.json() : null).then(j => {
+              if (!j) return;
+              tagEl.innerHTML = (j.tags||[]).map(t => '<span class="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-mono">'+t+'</span>').join('');
+            });
+        }
+        ta.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(refresh, 250); });
+        // Seed suggestions on open
+        fetch('/api/ai/suggest?limit=10').then(r => r.ok ? r.json() : null).then(j => {
+          if (!j || !suggEl) return;
+          suggEl.innerHTML = '';
+          (j.suggestions||[]).forEach(s => {
+            const li = document.createElement('li');
+            li.className = 'cursor-pointer rounded border border-slate-800 bg-slate-900 px-2 py-1 hover:border-indigo-500';
+            li.title = s.source + ' · score '+(s.score||0).toFixed(2);
+            li.textContent = s.text;
+            li.addEventListener('click', () => { ta.value = s.text; ta.dispatchEvent(new Event('input')); ta.focus(); });
+            suggEl.appendChild(li);
+          });
+        });
+        refresh();
+      })();
+      </script>
       {{if .Error}}
       <div class="rounded-md border border-rose-700/50 bg-rose-900/30 px-3 py-2 text-xs text-rose-200">{{.Error}}</div>
       {{end}}

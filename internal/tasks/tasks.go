@@ -47,6 +47,9 @@ type Task struct {
 	Status        Status
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+	// Tags is a comma-separated list of lowercased tags (PR-15). May be
+	// auto-suggested via aisearch.AutoTag and confirmed by the user.
+	Tags string
 }
 
 // ErrNotFound is returned when a task with the given ID does not exist.
@@ -102,7 +105,7 @@ func (r *Repo) Create(ctx context.Context, in CreateInput) (Task, error) {
 // List returns all tasks ordered by most recent activity first.
 func (r *Repo) List(ctx context.Context) ([]Task, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, title, initial_prompt, status, created_at, updated_at
+		`SELECT id, title, initial_prompt, status, created_at, updated_at, COALESCE(tags, '')
 		 FROM tasks
 		 ORDER BY updated_at DESC`)
 	if err != nil {
@@ -123,7 +126,7 @@ func (r *Repo) List(ctx context.Context) ([]Task, error) {
 // Get loads a single task by ID.
 func (r *Repo) Get(ctx context.Context, id string) (Task, error) {
 	row := r.db.QueryRowContext(ctx,
-		`SELECT id, title, initial_prompt, status, created_at, updated_at
+		`SELECT id, title, initial_prompt, status, created_at, updated_at, COALESCE(tags, '')
 		 FROM tasks WHERE id = ?`, id)
 	t, err := scanTask(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -173,9 +176,43 @@ func scanTask(s rowScanner) (Task, error) {
 		t      Task
 		status string
 	)
-	if err := s.Scan(&t.ID, &t.Title, &t.InitialPrompt, &status, &t.CreatedAt, &t.UpdatedAt); err != nil {
+	if err := s.Scan(&t.ID, &t.Title, &t.InitialPrompt, &status, &t.CreatedAt, &t.UpdatedAt, &t.Tags); err != nil {
 		return Task{}, fmt.Errorf("tasks: scan: %w", err)
 	}
 	t.Status = Status(status)
 	return t, nil
+}
+
+// SetTags overwrites a task's comma-separated tags list. Input is
+// lowercased and de-duplicated; pass "" to clear all tags.
+func (r *Repo) SetTags(ctx context.Context, id, tags string) error {
+	cleaned := normalizeTags(tags)
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE tasks SET tags = ?, updated_at = ? WHERE id = ?`,
+		cleaned, r.now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("tasks: set tags: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func normalizeTags(raw string) string {
+	seen := make(map[string]struct{}, 4)
+	out := make([]string, 0, 4)
+	for _, part := range strings.Split(raw, ",") {
+		p := strings.ToLower(strings.TrimSpace(part))
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return strings.Join(out, ",")
 }
