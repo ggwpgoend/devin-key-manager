@@ -19,6 +19,9 @@ import (
 	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/manager"
+	"github.com/ggwpgoend/devin-key-manager/internal/notifications"
+	"github.com/ggwpgoend/devin-key-manager/internal/scheduler"
+	"github.com/ggwpgoend/devin-key-manager/internal/schedules"
 	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
 	"github.com/ggwpgoend/devin-key-manager/internal/store"
 	"github.com/ggwpgoend/devin-key-manager/internal/tasks"
@@ -63,13 +66,16 @@ func run() error {
 	sessionsRepo := sessions.NewRepo(db)
 	handoffsRepo := handoffs.NewRepo(db)
 	artifactsRepo := artifacts.NewRepo(db)
+	schedulesRepo := schedules.NewRepo(db)
+	notificationsRepo := notifications.NewRepo(db)
 
 	// The downloader needs a BearerProvider. We create the manager first
 	// with a nil downloader, then wire the downloader after the manager
 	// exists so we can call mgr.BearerForSession.
 	mgr := manager.New(keysRepo, tasksRepo, sessionsRepo, handoffsRepo, manager.Options{
-		Logger:    logger,
-		Artifacts: artifactsRepo,
+		Logger:        logger,
+		Artifacts:     artifactsRepo,
+		Notifications: notificationsRepo,
 	})
 	downloader := artifacts.NewDownloader(artifactsRepo, cfg.ArtifactsDir, mgr.BearerForSession, logger)
 	mgr.SetDownloader(downloader)
@@ -95,13 +101,18 @@ func run() error {
 		}
 	}()
 
+	sched := scheduler.New(schedulesRepo, notificationsRepo, mgr, logger, 0)
+	sched.Start(ctx)
+
 	srv, err := web.NewServer(logger, web.Deps{
-		Keys:      keysRepo,
-		Tasks:     tasksRepo,
-		Sessions:  sessionsRepo,
-		Handoffs:  handoffsRepo,
-		Artifacts: artifactsRepo,
-		Manager:   mgr,
+		Keys:          keysRepo,
+		Tasks:         tasksRepo,
+		Sessions:      sessionsRepo,
+		Handoffs:      handoffsRepo,
+		Artifacts:     artifactsRepo,
+		Manager:       mgr,
+		Schedules:     schedulesRepo,
+		Notifications: notificationsRepo,
 	}, cfg.MasterKeyPath)
 	if err != nil {
 		return fmt.Errorf("init server: %w", err)
