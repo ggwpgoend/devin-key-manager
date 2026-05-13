@@ -20,6 +20,7 @@ import (
 
 	"github.com/ggwpgoend/devin-key-manager/internal/artifacts"
 	"github.com/ggwpgoend/devin-key-manager/internal/devin"
+	"github.com/ggwpgoend/devin-key-manager/internal/events"
 	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/manager"
@@ -33,6 +34,14 @@ import (
 //go:embed templates/*.html
 var templatesFS embed.FS
 
+//go:embed static/vendor/*
+var staticFS embed.FS
+
+// staticVersion is appended as a ?v= query param to vendored asset URLs so
+// the browser cache busts whenever the binary is rebuilt with new vendor
+// files. Source: the package version. Cheap and reliable since the binary
+// is a single artifact — a fresh build means fresh assets.
+
 // Server is the HTTP layer of the dashboard.
 type Server struct {
 	logger        *slog.Logger
@@ -43,6 +52,7 @@ type Server struct {
 	artifacts     *artifacts.Repo
 	schedules     *schedules.Repo
 	notifs        *notifications.Repo
+	bus           *events.Bus
 	manager       *manager.Manager
 	pages         map[string]*template.Template
 	partials      *template.Template
@@ -81,6 +91,7 @@ type Deps struct {
 	Artifacts     *artifacts.Repo
 	Schedules     *schedules.Repo
 	Notifications *notifications.Repo
+	Bus           *events.Bus
 	Manager       *manager.Manager
 }
 
@@ -130,6 +141,7 @@ func NewServer(logger *slog.Logger, deps Deps, masterKeyPath string) (*Server, e
 		artifacts:     deps.Artifacts,
 		schedules:     deps.Schedules,
 		notifs:        deps.Notifications,
+		bus:           deps.Bus,
 		manager:       deps.Manager,
 		pages:         pages,
 		partials:      partials,
@@ -204,8 +216,53 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	r.Get("/events/since", s.handleEventsSince)
+	// Server-Sent Events: long-lived stream pushing live state changes
+	// (key state, session messages, artifact ready, handoff linked).
+	// Lets the UI patch DOM without 4-15s polling cycles.
+	r.Get("/events/stream", s.handleEventsStream)
+
+	// JSON API (PR-10 #1). Parallel to the HTMX endpoints so external
+	// scripts / future UI fragments can consume the same data without
+	// scraping HTML. See internal/web/api.go.
+	s.registerAPI(r)
+
+	// Embedded vendor assets (HTMX, marked.js, highlight.js, Tailwind play,
+	// hljs theme). Long Cache-Control headers because the URLs include a
+	// ?v=<version> bust token wired in layout.html. Anything that wants to
+	// override one of these can drop a file at the same path in /static/.
+	r.Get("/static/vendor/*", s.handleStaticVendor)
 
 	return r
+}
+
+func (s *Server) handleStaticVendor(w http.ResponseWriter, r *http.Request) {
+	// chi RouteParam form for catch-all returns the trailing portion via
+	// chi.URLParam with the wildcard name "*". We then re-prefix to look it
+	// up in the embedded FS at static/vendor/<name>.
+	tail := chi.URLParam(r, "*")
+	if tail == "" || strings.Contains(tail, "..") {
+		http.NotFound(w, r)
+		return
+	}
+	path := "static/vendor/" + tail
+	data, err := staticFS.ReadFile(path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	switch {
+	case strings.HasSuffix(tail, ".js"):
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	case strings.HasSuffix(tail, ".css"):
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case strings.HasSuffix(tail, ".woff2"):
+		w.Header().Set("Content-Type", "font/woff2")
+	case strings.HasSuffix(tail, ".svg"):
+		w.Header().Set("Content-Type", "image/svg+xml")
+	}
+	// Vendor assets are content-addressed via ?v= so we can cache for a year.
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	_, _ = w.Write(data)
 }
 
 // --- /keys handlers (unchanged from PR-1) ---

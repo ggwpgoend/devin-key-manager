@@ -4,12 +4,15 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{.Title}} · devin-key-manager</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <!-- Vendor assets are served from /static/vendor/* embedded into the
+       binary so the manager works fully offline. ?v= cache-bust lets the
+       browser refresh after a binary upgrade. -->
+  <script src="/static/vendor/tailwind-play.min.js?v={{.Version}}"></script>
+  <script src="/static/vendor/htmx.min.js?v={{.Version}}" defer></script>
   <!-- Markdown rendering + syntax highlighting for chat bubbles (PR-5). -->
-  <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js" defer></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css">
-  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js" defer></script>
+  <script src="/static/vendor/marked.min.js?v={{.Version}}" defer></script>
+  <link rel="stylesheet" href="/static/vendor/atom-one-dark.min.css?v={{.Version}}">
+  <script src="/static/vendor/highlight.min.js?v={{.Version}}" defer></script>
   <style>
     body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
     .pill { @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium; }
@@ -278,9 +281,61 @@
         }
       }
 
-      // First poll soon, then every POLL_MS.
+      // First poll soon, then every POLL_MS. The poll acts as a catch-up
+      // backstop: if SSE was disconnected (proxy, sleep) any missed events
+      // are still surfaced on the next poll thanks to the localStorage cursor.
       setTimeout(poll, 1500);
       setInterval(poll, POLL_MS);
+
+      // Live event stream (PR-10). Pushes the same notification events as
+      // /events/since without the 15s gap, plus broadcasts state changes
+      // (key/session/artifact/handoff) that the UI can subscribe to via
+      // window.devinmgr.onEvent(kind, handler). Auto-reconnects on drop.
+      try {
+        if (typeof window.EventSource === "function") {
+          window.devinmgr = window.devinmgr || {};
+          const listeners = new Map(); // kind -> Set<fn>
+          window.devinmgr.onEvent = (kind, fn) => {
+            if (!listeners.has(kind)) listeners.set(kind, new Set());
+            listeners.get(kind).add(fn);
+            return () => listeners.get(kind).delete(fn);
+          };
+          const es = new EventSource("/events/stream");
+          window.devinmgr._es = es;
+          // For each well-known event kind register a typed handler. We
+          // could addEventListener('message', …) but the typed form maps
+          // 1:1 to the bus's Kind constants in internal/events.
+          const kinds = [
+            "notification",
+            "key.state_changed",
+            "session.message_appended",
+            "artifact.ready",
+            "handoff.linked",
+            "task.status_changed",
+          ];
+          kinds.forEach(kind => {
+            es.addEventListener(kind, ev => {
+              let payload;
+              try { payload = JSON.parse(ev.data); } catch (_) { return; }
+              // Pop a browser Notification only for the notification event
+              // kind (others are state-change broadcasts for the UI).
+              if (kind === "notification" && payload.data) {
+                showNotification({
+                  id:    payload.data.event_id || payload.id,
+                  title: payload.data.title || "devin-key-manager",
+                  body:  payload.data.body || "",
+                  url:   payload.data.url || "",
+                });
+              }
+              const set = listeners.get(kind);
+              if (set) set.forEach(fn => { try { fn(payload); } catch (_) {} });
+            });
+          });
+          es.onerror = () => {
+            // Browser auto-reconnects after `retry:` (3s). Nothing to do.
+          };
+        }
+      } catch (_) { /* old browser — polling continues to work */ }
     })();
   </script>
 </body>

@@ -186,6 +186,7 @@ func (m *Manager) rotate(ctx context.Context, dying sessions.Session, reason Rot
 	if err != nil {
 		return RotateResult{}, fmt.Errorf("manager: create replacement session: %w", err)
 	}
+	_ = m.keys.BumpSessionsCount(ctx, nextKey.ID)
 
 	client := m.clientOf(plaintext)
 	resp, err := client.CreateSession(ctx, devin.CreateSessionRequest{
@@ -193,6 +194,7 @@ func (m *Manager) rotate(ctx context.Context, dying sessions.Session, reason Rot
 		Title:  task.Title + " (resumed)",
 	})
 	if err != nil {
+		_ = m.keys.RecordError(ctx, nextKey.ID, err.Error())
 		_ = m.sessions.SetStatus(ctx, newLocal.ID, sessions.StatusFailed, "rotate: create devin session: "+err.Error())
 		// If the new key *also* hit quota, mark it cooldown too — but don't
 		// recurse forever. The caller may decide to retry.

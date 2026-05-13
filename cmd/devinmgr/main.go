@@ -18,6 +18,7 @@ import (
 	"github.com/ggwpgoend/devin-key-manager/internal/artifacts"
 	"github.com/ggwpgoend/devin-key-manager/internal/config"
 	"github.com/ggwpgoend/devin-key-manager/internal/crypto"
+	"github.com/ggwpgoend/devin-key-manager/internal/events"
 	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/manager"
@@ -81,13 +82,28 @@ func run() error {
 	// The downloader needs a BearerProvider. We create the manager first
 	// with a nil downloader, then wire the downloader after the manager
 	// exists so we can call mgr.BearerForSession.
+	bus := events.NewBus()
 	mgr := manager.New(keysRepo, tasksRepo, sessionsRepo, handoffsRepo, manager.Options{
 		Logger:        logger,
 		Artifacts:     artifactsRepo,
 		Notifications: notificationsRepo,
+		Bus:           bus,
 	})
 	downloader := artifacts.NewDownloader(artifactsRepo, cfg.ArtifactsDir, mgr.BearerForSession, logger)
 	mgr.SetDownloader(downloader)
+	// Hook the downloader so a successful artifact download immediately
+	// pings the SSE bus — the UI's gallery page can swap in the new image
+	// without a 4-second poll.
+	downloader.SetOnReady(func(_ context.Context, a artifacts.Artifact) {
+		bus.Publish(events.KindArtifactReady, map[string]any{
+			"artifact_id":  a.ID,
+			"session_id":   a.SessionID,
+			"task_id":      a.TaskID,
+			"filename":     a.Filename,
+			"content_type": a.ContentType,
+			"size_bytes":   a.SizeBytes,
+		})
+	})
 
 	// Background loops are tracked in a WaitGroup so shutdown waits for
 	// each loop to observe the cancelled context and exit its current
@@ -136,6 +152,7 @@ func run() error {
 		Manager:       mgr,
 		Schedules:     schedulesRepo,
 		Notifications: notificationsRepo,
+		Bus:           bus,
 	}, cfg.MasterKeyPath)
 	if err != nil {
 		return fmt.Errorf("init server: %w", err)

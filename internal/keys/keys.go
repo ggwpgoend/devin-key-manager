@@ -71,6 +71,17 @@ type Key struct {
 	Notes                   string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
+	// PR-10 metrics. RequestCount is incremented on every successful Devin
+	// API call made against this key. LastErrorMessage/LastErrorAt capture
+	// the most recent failure for the dashboard. ActivatedAt is set the
+	// first time the key is actually used (until then, the key is
+	// "installed but never invoked" — useful UX signal). SessionsCountTotal
+	// counts the rollup of distinct sessions ever opened on this key.
+	RequestCount       int64
+	LastErrorMessage   string
+	LastErrorAt        *time.Time
+	ActivatedAt        *time.Time
+	SessionsCountTotal int64
 }
 
 // MaskedFingerprint returns a short prefix of the fingerprint suitable for UI
@@ -255,7 +266,9 @@ const keyColumns = `
         id, label, plan_type, api_key_fingerprint, state,
         cooldown_until, daily_cycles_used_this_week, week_reset_at,
         last_used_at, last_checked_at, last_check_status, last_check_error,
-        notes, created_at, updated_at`
+        notes, created_at, updated_at,
+        request_count, last_error_message, last_error_at, activated_at,
+        sessions_count_total`
 
 // rowScanner is implemented by both *sql.Row and *sql.Rows so scanKey can
 // service both single and multi-row queries.
@@ -272,12 +285,16 @@ func scanKey(s rowScanner) (Key, error) {
 		weekReset   sql.NullTime
 		lastUsed    sql.NullTime
 		lastChecked sql.NullTime
+		lastErrAt   sql.NullTime
+		activatedAt sql.NullTime
 	)
 	if err := s.Scan(
 		&k.ID, &k.Label, &planStr, &k.Fingerprint, &stateStr,
 		&cooldown, &k.DailyCyclesUsedThisWeek, &weekReset,
 		&lastUsed, &lastChecked, &k.LastCheckStatus, &k.LastCheckError,
 		&k.Notes, &k.CreatedAt, &k.UpdatedAt,
+		&k.RequestCount, &k.LastErrorMessage, &lastErrAt, &activatedAt,
+		&k.SessionsCountTotal,
 	); err != nil {
 		return Key{}, fmt.Errorf("keys: scan: %w", err)
 	}
@@ -298,6 +315,14 @@ func scanKey(s rowScanner) (Key, error) {
 	if lastChecked.Valid {
 		t := lastChecked.Time
 		k.LastCheckedAt = &t
+	}
+	if lastErrAt.Valid {
+		t := lastErrAt.Time
+		k.LastErrorAt = &t
+	}
+	if activatedAt.Valid {
+		t := activatedAt.Time
+		k.ActivatedAt = &t
 	}
 	return k, nil
 }
