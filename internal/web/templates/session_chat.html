@@ -109,13 +109,18 @@
     </form>
   </details>
 
-  <!-- Messages (HTMX-polled) -->
-  <div id="chat-stream"
-       hx-get="/sessions/{{.Session.ID}}/messages"
-       hx-trigger="every 4s"
-       hx-swap="outerHTML"
-       class="flex-1 overflow-y-auto py-4">
-    {{template "chat_messages" .}}
+  <!-- Messages (HTMX-polled).
+       The scroll container (#chat-scroll) is intentionally OUTSIDE the
+       polled wrapper so each 4-second swap doesn't reset scroll position
+       and the sticky-bottom logic in layout.html has somewhere stable to
+       observe scroll state. -->
+  <div id="chat-scroll" class="flex-1 overflow-y-auto py-4">
+    <div id="chat-stream"
+         hx-get="/sessions/{{.Session.ID}}/messages"
+         hx-trigger="every 4s"
+         hx-swap="outerHTML">
+      {{template "chat_messages" .}}
+    </div>
   </div>
 
   <!-- Composer -->
@@ -147,8 +152,7 @@
 <div id="chat-stream"
      hx-get="/sessions/{{.Session.ID}}/messages"
      hx-trigger="every 4s"
-     hx-swap="outerHTML"
-     class="flex-1 overflow-y-auto py-4">
+     hx-swap="outerHTML">
   {{if not .MessageViews}}
   <div class="rounded-md border border-dashed border-slate-700 bg-slate-900/30 px-4 py-8 text-center text-sm text-slate-400">
     Waiting for Devin's first message…
@@ -158,24 +162,24 @@
     {{range .MessageViews}}
       {{$m := .Message}}
       {{if eq (printf "%s" $m.Role) "user"}}
-      <div class="flex justify-end">
+      <div class="flex justify-end" data-msg-id="{{$m.ID}}">
         <div class="max-w-[80%] rounded-lg bg-indigo-600/90 px-4 py-2 text-sm text-white shadow">
           <div class="whitespace-pre-wrap">{{$m.Content}}</div>
           <div class="mt-1 text-right text-[10px] text-indigo-100/80">{{$m.Timestamp.Format "15:04:05"}}</div>
         </div>
       </div>
       {{else if eq (printf "%s" $m.Role) "assistant"}}
-      <div class="flex items-start gap-3">
+      <div class="flex items-start gap-3" data-msg-id="{{$m.ID}}">
         <div class="flex h-8 w-8 flex-none items-center justify-center rounded-full bg-slate-800 text-xs font-semibold text-indigo-300">D</div>
         <div class="max-w-[80%] rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm text-slate-100 shadow">
           <div class="text-xs font-semibold text-indigo-300">Devin</div>
-          <div class="mt-1" data-md>{{$m.Content}}</div>
+          <div class="mt-1" data-md data-md-key="{{$m.ID}}">{{$m.Content}}</div>
           {{template "chat_attachments" .}}
           <div class="mt-1 text-[10px] text-slate-500">{{$m.Timestamp.Format "15:04:05"}}</div>
         </div>
       </div>
       {{else}}
-      <div class="flex justify-center">
+      <div class="flex justify-center" data-msg-id="{{$m.ID}}">
         <div class="max-w-[80%] rounded-md border border-slate-800 bg-slate-900/40 px-3 py-1.5 text-xs italic text-slate-400">
           {{$m.Content}}
         </div>

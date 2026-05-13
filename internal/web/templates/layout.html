@@ -87,9 +87,45 @@
     {{template "content" .}}
   </main>
   <script>
-    // Markdown renderer for chat bubbles. Runs once on DOM ready and again
-    // after every HTMX swap so polled message updates also get processed.
+    // Markdown renderer for chat bubbles.
+    //
+    // Two correctness concerns drive the design here:
+    //   1. The chat stream is polled every 4s by HTMX. Without caching we
+    //      would re-parse every message's markdown and re-run highlight.js
+    //      on every code block on every tick — a few hundred ms of UI
+    //      jank per poll for a long chat. We cache rendered HTML by
+    //      message id (data-md-key) + raw content hash, so unchanged
+    //      messages restore from cache in O(1).
+    //   2. The scroll container (#chat-scroll) is now OUTSIDE the swapped
+    //      #chat-stream element, so the container survives the swap.
+    //      That preserves scroll position automatically when reading
+    //      historical messages, while still letting us auto-stick to the
+    //      bottom when the user IS at the bottom (i.e. tailing live).
     (function () {
+      var mdCache = Object.create(null);
+      function djb2(s) {
+        var h = 5381;
+        for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+        return h;
+      }
+      function attachCopyButton(pre, code) {
+        if (!pre || pre.querySelector(".md-copy")) return;
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "md-copy";
+        btn.textContent = "Copy";
+        btn.addEventListener("click", function () {
+          navigator.clipboard.writeText(code.innerText || code.textContent || "").then(function () {
+            btn.textContent = "Copied";
+            btn.classList.add("md-copy--ok");
+            setTimeout(function () {
+              btn.textContent = "Copy";
+              btn.classList.remove("md-copy--ok");
+            }, 1200);
+          });
+        });
+        pre.appendChild(btn);
+      }
       function renderAll(root) {
         if (typeof marked === "undefined") return;
         marked.use({
@@ -100,37 +136,62 @@
         });
         (root || document).querySelectorAll("[data-md]:not([data-md-done])").forEach(function (el) {
           var src = el.getAttribute("data-md-src") || el.textContent;
+          var key = el.getAttribute("data-md-key");
+          var cacheKey = key ? key + ":" + djb2(src) : "";
           el.classList.add("md-body");
-          el.innerHTML = marked.parse(src);
-          el.setAttribute("data-md-done", "1");
+          if (cacheKey && mdCache[cacheKey]) {
+            // Restore cached HTML — skip marked + highlight.js entirely.
+            el.innerHTML = mdCache[cacheKey];
+          } else {
+            el.innerHTML = marked.parse(src);
+            el.querySelectorAll("pre code").forEach(function (code) {
+              if (typeof hljs !== "undefined") {
+                try { hljs.highlightElement(code); } catch (e) {}
+              }
+              attachCopyButton(code.parentElement, code);
+            });
+            if (cacheKey) mdCache[cacheKey] = el.innerHTML;
+          }
+          // Always (re)attach copy handlers — innerHTML restore loses the
+          // listeners but keeps the .md-copy DOM nodes from the cached
+          // markup; the click handler we attached above is gone, so wire
+          // a fresh one over the existing button.
           el.querySelectorAll("pre code").forEach(function (code) {
-            if (typeof hljs !== "undefined") {
-              try { hljs.highlightElement(code); } catch (e) {}
-            }
             var pre = code.parentElement;
-            if (pre && !pre.querySelector(".md-copy")) {
-              var btn = document.createElement("button");
-              btn.type = "button";
-              btn.className = "md-copy";
-              btn.textContent = "Copy";
-              btn.addEventListener("click", function () {
-                navigator.clipboard.writeText(code.innerText || code.textContent || "").then(function () {
-                  btn.textContent = "Copied";
-                  btn.classList.add("md-copy--ok");
-                  setTimeout(function () {
-                    btn.textContent = "Copy";
-                    btn.classList.remove("md-copy--ok");
-                  }, 1200);
-                });
-              });
-              pre.appendChild(btn);
-            }
+            var existing = pre && pre.querySelector(".md-copy");
+            if (existing) existing.remove();
+            attachCopyButton(pre, code);
           });
+          el.setAttribute("data-md-done", "1");
         });
       }
+
+      // Sticky-bottom scroll: only auto-scroll the chat container to the
+      // bottom when the user was within 80px of the bottom BEFORE the
+      // swap. Otherwise leave them where they are (mid-history reading).
+      var stickyBottom = true;
+      function recordSticky() {
+        var sc = document.getElementById("chat-scroll");
+        if (!sc) return;
+        stickyBottom = (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < 80;
+      }
+      function applySticky() {
+        var sc = document.getElementById("chat-scroll");
+        if (!sc) return;
+        if (stickyBottom) sc.scrollTop = sc.scrollHeight;
+      }
+      document.addEventListener("scroll", recordSticky, true);
+
       window.renderMarkdown = renderAll;
-      document.addEventListener("DOMContentLoaded", function () { renderAll(document); });
-      document.addEventListener("htmx:afterSwap", function (evt) { renderAll(evt.target); });
+      document.addEventListener("DOMContentLoaded", function () {
+        renderAll(document);
+        applySticky();
+      });
+      document.addEventListener("htmx:beforeSwap", function () { recordSticky(); });
+      document.addEventListener("htmx:afterSwap", function (evt) {
+        renderAll(evt.target);
+        applySticky();
+      });
     })();
   </script>
   <footer class="mx-auto max-w-6xl px-6 pb-8 pt-12 text-xs text-slate-500">
