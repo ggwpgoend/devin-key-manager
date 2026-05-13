@@ -26,6 +26,7 @@ import (
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/manager"
 	"github.com/ggwpgoend/devin-key-manager/internal/notifications"
+	"github.com/ggwpgoend/devin-key-manager/internal/pipelines"
 	"github.com/ggwpgoend/devin-key-manager/internal/schedules"
 	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
 	"github.com/ggwpgoend/devin-key-manager/internal/tasks"
@@ -54,6 +55,8 @@ type Server struct {
 	schedules     *schedules.Repo
 	notifs        *notifications.Repo
 	attachments   *attachments.Repo
+	pipelines     *pipelines.Repo
+	pipelineExec  *pipelines.Executor
 	bus           *events.Bus
 	manager       *manager.Manager
 	pages         map[string]*template.Template
@@ -73,6 +76,9 @@ var pageContentFiles = map[string]string{
 	"session_chat":    "templates/session_chat.html",
 	"session_files":   "templates/session_files.html",
 	"schedules_index": "templates/schedules_index.html",
+	// PR-13: pipeline editor (E43.1).
+	"pipelines_index": "templates/pipelines_index.html",
+	"pipeline_editor": "templates/pipeline_editor.html",
 }
 
 // partialFiles enumerates the HTMX partial templates rendered without the
@@ -95,6 +101,8 @@ type Deps struct {
 	Schedules     *schedules.Repo
 	Notifications *notifications.Repo
 	Attachments   *attachments.Repo
+	Pipelines     *pipelines.Repo
+	PipelineExec  *pipelines.Executor
 	Bus           *events.Bus
 	Manager       *manager.Manager
 }
@@ -146,6 +154,8 @@ func NewServer(logger *slog.Logger, deps Deps, masterKeyPath string) (*Server, e
 		schedules:     deps.Schedules,
 		notifs:        deps.Notifications,
 		attachments:   deps.Attachments,
+		pipelines:     deps.Pipelines,
+		pipelineExec:  deps.PipelineExec,
 		bus:           deps.Bus,
 		manager:       deps.Manager,
 		pages:         pages,
@@ -233,6 +243,34 @@ func (s *Server) Handler() http.Handler {
 
 	r.Route("/handoffs", func(r chi.Router) {
 		r.Get("/{id}", s.handleHandoffDetail)
+	})
+
+	// PR-13: pipeline editor (E43.1). Routes:
+	//   GET    /pipelines                 — list view
+	//   POST   /pipelines                 — create new pipeline
+	//   GET    /pipelines/{id}            — editor canvas
+	//   PUT    /pipelines/{id}            — update header
+	//   DELETE /pipelines/{id}            — delete
+	//   GET    /pipelines/{id}/graph      — JSON graph (nodes + edges)
+	//   PUT    /pipelines/{id}/graph      — replace nodes + edges atomically
+	//   POST   /pipelines/{id}/runs       — start a run (simulated)
+	//   GET    /pipelines/{id}/runs       — list runs
+	//   GET    /pipeline-runs/{run_id}    — run detail (steps)
+	//   POST   /pipeline-runs/{run_id}/rollback — rewind one step
+	r.Route("/pipelines", func(r chi.Router) {
+		r.Get("/", s.handlePipelinesIndex)
+		r.Post("/", s.handlePipelinesCreate)
+		r.Get("/{id}", s.handlePipelineEditor)
+		r.Put("/{id}", s.handlePipelineUpdateHeader)
+		r.Delete("/{id}", s.handlePipelineDelete)
+		r.Get("/{id}/graph", s.handlePipelineGraphGet)
+		r.Put("/{id}/graph", s.handlePipelineGraphReplace)
+		r.Post("/{id}/runs", s.handlePipelineStartRun)
+		r.Get("/{id}/runs", s.handlePipelineListRuns)
+	})
+	r.Route("/pipeline-runs", func(r chi.Router) {
+		r.Get("/{run_id}", s.handlePipelineRunDetail)
+		r.Post("/{run_id}/rollback", s.handlePipelineRunRollback)
 	})
 
 	r.Route("/schedules", func(r chi.Router) {
@@ -1015,6 +1053,13 @@ type pageData struct {
 	Stats       dashStats
 	RecentTasks []tasks.Task
 	KeyRollup   []keyRollup
+
+	// Pipelines (PR-13).
+	Pipelines     []pipelinesIndexRow
+	PipelineRow   pipelines.Pipeline
+	GraphJSON     string
+	RunsJSON      string
+	NavCurrent    string
 }
 
 // dashStats is the bento KPI bundle for the dashboard.
