@@ -79,8 +79,10 @@
       <nav class="flex items-center gap-4 text-sm">
         <a href="/keys" class="{{if eq .Active "keys"}}text-white{{else}}text-slate-400 hover:text-white{{end}}">Keys</a>
         <a href="/tasks" class="{{if eq .Active "tasks"}}text-white{{else}}text-slate-400 hover:text-white{{end}}">Tasks</a>
+        <a href="/schedules" class="{{if eq .Active "schedules"}}text-white{{else}}text-slate-400 hover:text-white{{end}}">Schedules</a>
         <span class="{{if eq .Active "sessions"}}text-white{{else}}text-slate-700{{end}}">Sessions</span>
       </nav>
+      <div id="notif-bell" class="flex items-center gap-2 text-xs text-slate-400"></div>
     </div>
   </header>
   <main class="mx-auto max-w-6xl px-6 py-8">
@@ -197,5 +199,89 @@
   <footer class="mx-auto max-w-6xl px-6 pb-8 pt-12 text-xs text-slate-500">
     Local dashboard — listening on this machine only. Master key file: <code class="rounded bg-slate-900 px-1.5 py-0.5">{{.MasterKeyPath}}</code>
   </footer>
+  <script>
+    // PR-8: lightweight browser-notification poller. We hit /events/since
+    // periodically; for each unseen event we pop a Notification (subject to
+    // the user having granted permission) and bump the high-water id in
+    // localStorage so we don't double-toast on reload.
+    (function () {
+      const STORAGE_KEY = "devinmgr.lastEventId";
+      const POLL_MS = 15000;
+      const bell = document.getElementById("notif-bell");
+
+      function renderBell(state) {
+        if (!bell) return;
+        bell.innerHTML = "";
+        if (state === "default") {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800";
+          btn.textContent = "🔔 Enable notifications";
+          btn.addEventListener("click", () => {
+            Notification.requestPermission().then(p => renderBell(p));
+          });
+          bell.appendChild(btn);
+        } else if (state === "denied") {
+          const span = document.createElement("span");
+          span.className = "text-slate-600";
+          span.title = "Browser denied notification permission.";
+          span.textContent = "🔕";
+          bell.appendChild(span);
+        } else if (state === "granted") {
+          const span = document.createElement("span");
+          span.className = "text-emerald-400";
+          span.title = "Browser notifications enabled.";
+          span.textContent = "🔔";
+          bell.appendChild(span);
+        }
+      }
+
+      if (!("Notification" in window)) {
+        // Browser without the Notification API — no-op but keep the polling
+        // alive so the rest of the dashboard works.
+        if (bell) bell.textContent = "🔕";
+      } else {
+        renderBell(Notification.permission);
+      }
+
+      function showNotification(e) {
+        if (!("Notification" in window) || Notification.permission !== "granted") return;
+        const opts = { body: e.body || "", tag: "devinmgr-" + e.id };
+        const n = new Notification(e.title || "devin-key-manager", opts);
+        if (e.url) {
+          n.onclick = () => { window.focus(); window.location.href = e.url; };
+        }
+      }
+
+      async function poll() {
+        try {
+          const after = Number(localStorage.getItem(STORAGE_KEY) || "0");
+          const url = "/events/since?after=" + encodeURIComponent(after);
+          const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+          if (!resp.ok) return;
+          const data = await resp.json();
+          if (Array.isArray(data.events)) {
+            for (const e of data.events) {
+              if (after > 0) showNotification(e); // skip backlog on first load
+              if (e.id > after) localStorage.setItem(STORAGE_KEY, String(e.id));
+            }
+            // First-time cursor seed: server returns last_id (the highest
+            // event id at query time). Compare against event ids — never
+            // against wall-clock timestamps, since they live in different
+            // numeric universes.
+            if (after === 0 && typeof data.last_id === "number" && data.last_id > 0) {
+              localStorage.setItem(STORAGE_KEY, String(data.last_id));
+            }
+          }
+        } catch (_) {
+          // Network blips are fine — try again on the next tick.
+        }
+      }
+
+      // First poll soon, then every POLL_MS.
+      setTimeout(poll, 1500);
+      setInterval(poll, POLL_MS);
+    })();
+  </script>
 </body>
 </html>{{end}}

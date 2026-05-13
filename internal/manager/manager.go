@@ -19,6 +19,8 @@ import (
 	"github.com/ggwpgoend/devin-key-manager/internal/devin"
 	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
+	"github.com/ggwpgoend/devin-key-manager/internal/notifications"
+	"github.com/ggwpgoend/devin-key-manager/internal/schedules"
 	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
 	"github.com/ggwpgoend/devin-key-manager/internal/tasks"
 )
@@ -43,6 +45,7 @@ type Manager struct {
 	handoffs   *handoffs.Repo
 	artifacts  *artifacts.Repo
 	downloader *artifacts.Downloader
+	notifs     *notifications.Repo
 	clientOf   ClientFactory
 	now        func() time.Time
 }
@@ -54,6 +57,7 @@ type Options struct {
 	Now           func() time.Time
 	Artifacts     *artifacts.Repo
 	Downloader    *artifacts.Downloader
+	Notifications *notifications.Repo
 }
 
 // New constructs a Manager. Pass a non-nil handoffs.Repo so the quota
@@ -80,10 +84,15 @@ func New(k *keys.Repo, t *tasks.Repo, s *sessions.Repo, h *handoffs.Repo, opts O
 		handoffs:   h,
 		artifacts:  opts.Artifacts,
 		downloader: opts.Downloader,
+		notifs:     opts.Notifications,
 		clientOf:   factory,
 		now:        now,
 	}
 }
+
+// SetNotifications attaches the notification event store after construction.
+// Optional — when nil the manager simply skips appending events.
+func (m *Manager) SetNotifications(n *notifications.Repo) { m.notifs = n }
 
 // StartTaskInput captures the user-supplied fields for StartTask.
 type StartTaskInput struct {
@@ -266,6 +275,12 @@ func (m *Manager) SyncSession(ctx context.Context, sessionID string) error {
 		}
 		return err
 	}
+	// Snapshot the previous Devin-side message count so we can detect new
+	// assistant replies after the replace and surface them as browser
+	// notifications.
+	prevCached, _ := m.sessions.ListMessages(ctx, sessionID)
+	prevDevin := countAssistantMessages(prevCached)
+
 	cached := make([]sessions.Message, 0, len(remote.Messages))
 	for _, msg := range remote.Messages {
 		cached = append(cached, sessions.Message{
@@ -278,6 +293,7 @@ func (m *Manager) SyncSession(ctx context.Context, sessionID string) error {
 	if err := m.sessions.ReplaceMessages(ctx, sessionID, cached); err != nil {
 		return err
 	}
+	m.notifyNewDevinMessages(ctx, sess, cached, prevDevin)
 	if status := statusFromDevin(remote.Status); status != "" {
 		_ = m.sessions.SetStatus(ctx, sessionID, status, remote.Status)
 	}
@@ -384,6 +400,90 @@ func (m *Manager) BearerForSession(ctx context.Context, sessionID string) (strin
 func (m *Manager) SnapDesktop(ctx context.Context, sessionID string) error {
 	const prompt = "Please take a screenshot of your current desktop and include it as an image attachment in your reply. Do not include any other commentary."
 	return m.SendFollowUp(ctx, sessionID, prompt)
+}
+
+// StartScheduledTask is the Runner callback used by internal/scheduler. It
+// kicks off a normal task using the schedule's title + prompt and returns
+// the new Devin session id so the scheduler can pin it to last_session_id.
+func (m *Manager) StartScheduledTask(ctx context.Context, sch schedules.Schedule) (string, error) {
+	res, err := m.StartTask(ctx, StartTaskInput{
+		Title:  sch.Title,
+		Prompt: sch.Prompt,
+	})
+	if err != nil {
+		return "", err
+	}
+	return res.Session.ID, nil
+}
+
+// countAssistantMessages returns the number of Devin-side messages in s.
+func countAssistantMessages(msgs []sessions.Message) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role == sessions.RoleAssistant {
+			n++
+		}
+	}
+	return n
+}
+
+// notifyNewDevinMessages appends a notification event when SyncSession sees
+// new assistant replies. We summarise the last new message so the toast has
+// useful content; if there are many, we just say how many arrived.
+func (m *Manager) notifyNewDevinMessages(ctx context.Context, sess sessions.Session, cached []sessions.Message, prevCount int) {
+	if m.notifs == nil {
+		return
+	}
+	nowCount := countAssistantMessages(cached)
+	if nowCount <= prevCount {
+		return
+	}
+	// Find the newest assistant reply to use as the body.
+	var lastBody string
+	for i := len(cached) - 1; i >= 0; i-- {
+		if cached[i].Role == sessions.RoleAssistant {
+			lastBody = cached[i].Content
+			break
+		}
+	}
+	if r := []rune(lastBody); len(r) > 200 {
+		// Slice by runes, not bytes — otherwise multi-byte characters
+		// (Cyrillic, CJK, emoji) get cut mid-sequence and end up as
+		// mojibake in the browser-side Notification body.
+		lastBody = string(r[:200]) + "…"
+	}
+	title := "Devin replied"
+	if delta := nowCount - prevCount; delta > 1 {
+		title = fmt.Sprintf("Devin replied (%d new)", delta)
+	}
+	if _, err := m.notifs.Append(ctx, notifications.AppendInput{
+		Kind:             notifications.KindDevinMessage,
+		Title:            title,
+		Body:             lastBody,
+		URL:              "/sessions/" + sess.ID,
+		RelatedTaskID:    sess.TaskID,
+		RelatedSessionID: sess.ID,
+	}); err != nil {
+		m.logger.Warn("notify devin message", "err", err)
+	}
+}
+
+// NotifyHandoff appends a notification event for a quota-driven rotation.
+// Called from the rotation code path.
+func (m *Manager) NotifyHandoff(ctx context.Context, fromSess, toSess sessions.Session, reason string) {
+	if m.notifs == nil {
+		return
+	}
+	if _, err := m.notifs.Append(ctx, notifications.AppendInput{
+		Kind:             notifications.KindHandoff,
+		Title:            "Handoff to new key",
+		Body:             reason,
+		URL:              "/sessions/" + toSess.ID,
+		RelatedTaskID:    fromSess.TaskID,
+		RelatedSessionID: toSess.ID,
+	}); err != nil {
+		m.logger.Warn("notify handoff", "err", err)
+	}
 }
 
 // deriveTitle returns a short title from the first line of the prompt.

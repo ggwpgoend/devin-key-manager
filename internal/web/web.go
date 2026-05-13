@@ -23,6 +23,8 @@ import (
 	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/manager"
+	"github.com/ggwpgoend/devin-key-manager/internal/notifications"
+	"github.com/ggwpgoend/devin-key-manager/internal/schedules"
 	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
 	"github.com/ggwpgoend/devin-key-manager/internal/tasks"
 	"github.com/ggwpgoend/devin-key-manager/internal/version"
@@ -39,6 +41,8 @@ type Server struct {
 	sessions      *sessions.Repo
 	handoffs      *handoffs.Repo
 	artifacts     *artifacts.Repo
+	schedules     *schedules.Repo
+	notifs        *notifications.Repo
 	manager       *manager.Manager
 	pages         map[string]*template.Template
 	partials      *template.Template
@@ -50,11 +54,12 @@ type Server struct {
 // that multiple pages can each define a {{define "content"}} block without
 // clashing in a single shared parse tree.
 var pageContentFiles = map[string]string{
-	"keys_index":    "templates/keys_index.html",
-	"tasks_index":   "templates/tasks_index.html",
-	"task_detail":   "templates/task_detail.html",
-	"session_chat":  "templates/session_chat.html",
-	"session_files": "templates/session_files.html",
+	"keys_index":      "templates/keys_index.html",
+	"tasks_index":     "templates/tasks_index.html",
+	"task_detail":     "templates/task_detail.html",
+	"session_chat":    "templates/session_chat.html",
+	"session_files":   "templates/session_files.html",
+	"schedules_index": "templates/schedules_index.html",
 }
 
 // partialFiles enumerates the HTMX partial templates rendered without the
@@ -69,12 +74,14 @@ var partialFiles = []string{
 
 // Deps bundles the repositories and orchestrator the web layer depends on.
 type Deps struct {
-	Keys      *keys.Repo
-	Tasks     *tasks.Repo
-	Sessions  *sessions.Repo
-	Handoffs  *handoffs.Repo
-	Artifacts *artifacts.Repo
-	Manager   *manager.Manager
+	Keys          *keys.Repo
+	Tasks         *tasks.Repo
+	Sessions      *sessions.Repo
+	Handoffs      *handoffs.Repo
+	Artifacts     *artifacts.Repo
+	Schedules     *schedules.Repo
+	Notifications *notifications.Repo
+	Manager       *manager.Manager
 }
 
 // NewServer compiles templates and prepares the handler. masterKeyPath is
@@ -121,6 +128,8 @@ func NewServer(logger *slog.Logger, deps Deps, masterKeyPath string) (*Server, e
 		sessions:      deps.Sessions,
 		handoffs:      deps.Handoffs,
 		artifacts:     deps.Artifacts,
+		schedules:     deps.Schedules,
+		notifs:        deps.Notifications,
 		manager:       deps.Manager,
 		pages:         pages,
 		partials:      partials,
@@ -185,6 +194,16 @@ func (s *Server) Handler() http.Handler {
 	r.Route("/handoffs", func(r chi.Router) {
 		r.Get("/{id}", s.handleHandoffDetail)
 	})
+
+	r.Route("/schedules", func(r chi.Router) {
+		r.Get("/", s.handleSchedulesIndex)
+		r.Post("/", s.handleSchedulesCreate)
+		r.Post("/{id}/toggle", s.handleSchedulesToggle)
+		r.Post("/{id}/run", s.handleSchedulesRunNow)
+		r.Delete("/{id}", s.handleSchedulesDelete)
+	})
+
+	r.Get("/events/since", s.handleEventsSince)
 
 	return r
 }
@@ -861,6 +880,29 @@ type pageData struct {
 	Composer        composerData
 	InboundHandoff  handoffs.Handoff
 	OutboundHandoff handoffs.Handoff
+
+	// Schedules index.
+	Schedules     []schedules.Schedule
+	ScheduleError string
+	ScheduleForm  scheduleFormData
+	// ServerTime / ServerTZ are echoed back in the schedules form so the
+	// user knows which zone a "daily HH:MM" entry will resolve in. The
+	// scheduler always computes daily fires against time.Local on the
+	// server, which can be UTC in headless setups.
+	ServerTime string
+	ServerTZ   string
+}
+
+// scheduleFormData carries the pre-filled values for the schedules creation
+// form on /schedules so we can echo them back when validation fails.
+type scheduleFormData struct {
+	Title           string
+	Prompt          string
+	PlanHint        string
+	Kind            string
+	IntervalSeconds int64
+	DailyHour       int
+	DailyMinute     int
 }
 
 // messageView pairs a session message with any artifacts referenced from its

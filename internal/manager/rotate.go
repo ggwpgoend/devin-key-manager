@@ -245,6 +245,7 @@ func (m *Manager) rotate(ctx context.Context, dying sessions.Session, reason Rot
 		"new_key_label", nextKey.Label,
 		"reason", string(reason),
 	)
+	m.NotifyHandoff(ctx, dying, newSess, fmt.Sprintf("%s · new key: %s", reason, nextKey.Label))
 	return RotateResult{
 		Task:          task,
 		FromSession:   dying,
