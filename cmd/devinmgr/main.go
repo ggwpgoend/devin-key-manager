@@ -68,6 +68,13 @@ func run() error {
 		}
 	}()
 
+	checker := manager.NewChecker(mgr, logger, manager.CheckerOptions{RunOnStart: true})
+	go func() {
+		if err := checker.Run(ctx); err != nil {
+			logger.Warn("checker exited", "err", err)
+		}
+	}()
+
 	srv, err := web.NewServer(logger, web.Deps{
 		Keys:     keysRepo,
 		Tasks:    tasksRepo,

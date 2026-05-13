@@ -82,3 +82,26 @@ type APIError struct {
 func (e *APIError) Error() string {
 	return "devin: api error " + httpStatusText(e.StatusCode) + ": " + truncate(e.Body, 256)
 }
+
+// ValidateStatus is the machine-stable outcome tag returned by Client.Validate.
+type ValidateStatus string
+
+const (
+	ValidateValid          ValidateStatus = "valid"
+	ValidateUnauthorized   ValidateStatus = "unauthorized"
+	ValidateQuotaExhausted ValidateStatus = "quota_exhausted"
+	ValidateRateLimited    ValidateStatus = "rate_limited"
+	ValidateNetworkError   ValidateStatus = "network_error"
+	ValidateAPIError       ValidateStatus = "api_error"
+)
+
+// ValidateResult is the structured outcome of a key-validity check. Unlike the
+// other client methods, Validate never returns a Go error: it always populates
+// Status so callers can branch on it without sniffing error chains.
+type ValidateResult struct {
+	Status     ValidateStatus
+	HTTPStatus int
+	// Error is a human-readable description suitable for the dashboard.
+	// Empty when Status == ValidateValid.
+	Error string
+}

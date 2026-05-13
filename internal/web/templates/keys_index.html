@@ -4,13 +4,24 @@
     <h1 class="text-2xl font-semibold">API keys</h1>
     <p class="mt-1 text-sm text-slate-400">{{len .Keys}} key{{if ne (len .Keys) 1}}s{{end}} in pool. Trial keys are used first.</p>
   </div>
-  <button
-    class="rounded-md bg-indigo-500 px-4 py-2 text-sm font-medium text-white shadow hover:bg-indigo-400"
-    hx-get="/keys/new"
-    hx-target="#dialog"
-    hx-swap="innerHTML">
-    + Add key
-  </button>
+  <div class="flex items-center gap-2">
+    {{if gt (len .Keys) 0}}
+    <button
+      class="rounded-md border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-medium text-slate-200 shadow hover:bg-slate-800"
+      hx-post="/keys/check-all"
+      hx-swap="none"
+      title="Validate every key against the Devin API.">
+      Check all
+    </button>
+    {{end}}
+    <button
+      class="rounded-md bg-indigo-500 px-4 py-2 text-sm font-medium text-white shadow hover:bg-indigo-400"
+      hx-get="/keys/new"
+      hx-target="#dialog"
+      hx-swap="innerHTML">
+      + Add key
+    </button>
+  </div>
 </div>
 
 {{if .Flash}}
@@ -41,6 +52,7 @@
         <th class="px-4 py-3">State</th>
         <th class="px-4 py-3">Fingerprint</th>
         <th class="px-4 py-3">Last used</th>
+        <th class="px-4 py-3">Last checked</th>
         <th class="px-4 py-3 text-right">Actions</th>
       </tr>
     </thead>
@@ -72,8 +84,36 @@
         <td class="px-4 py-3 text-slate-400">
           {{if .LastUsedAt}}{{.LastUsedAt.Format "2006-01-02 15:04"}}{{else}}—{{end}}
         </td>
+        <td class="px-4 py-3">
+          {{if .LastCheckedAt}}
+            <div class="flex items-center gap-2">
+              {{if eq .LastCheckStatus "valid"}}
+                <span class="inline-flex items-center rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-300" title="Valid key">✓ valid</span>
+              {{else if eq .LastCheckStatus "unauthorized"}}
+                <span class="inline-flex items-center rounded-full bg-rose-500/15 px-2 py-0.5 text-xs font-medium text-rose-300" title="{{.LastCheckError}}">✗ unauthorized</span>
+              {{else if eq .LastCheckStatus "quota_exhausted"}}
+                <span class="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300" title="{{.LastCheckError}}">quota out</span>
+              {{else if eq .LastCheckStatus "rate_limited"}}
+                <span class="inline-flex items-center rounded-full bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-300" title="{{.LastCheckError}}">rate-limited</span>
+              {{else if eq .LastCheckStatus "network_error"}}
+                <span class="inline-flex items-center rounded-full bg-slate-500/15 px-2 py-0.5 text-xs font-medium text-slate-300" title="{{.LastCheckError}}">net err</span>
+              {{else if eq .LastCheckStatus "api_error"}}
+                <span class="inline-flex items-center rounded-full bg-rose-500/15 px-2 py-0.5 text-xs font-medium text-rose-300" title="{{.LastCheckError}}">api err</span>
+              {{else}}
+                <span class="inline-flex items-center rounded-full bg-slate-500/15 px-2 py-0.5 text-xs font-medium text-slate-300">{{.LastCheckStatus}}</span>
+              {{end}}
+              <span class="text-xs text-slate-400">{{.LastCheckedAt.Format "01-02 15:04"}}</span>
+            </div>
+          {{else}}
+            <span class="text-slate-500">—</span>
+          {{end}}
+        </td>
         <td class="px-4 py-3 text-right">
           <button class="text-xs text-slate-300 hover:text-white"
+                  hx-post="/keys/{{.ID}}/check"
+                  hx-swap="none"
+                  title="Validate this key against the Devin API.">check</button>
+          <button class="ml-3 text-xs text-slate-300 hover:text-white"
                   hx-get="/keys/{{.ID}}/edit"
                   hx-target="#dialog"
                   hx-swap="innerHTML">edit</button>
@@ -86,7 +126,7 @@
       </tr>
       {{if .Notes}}
       <tr>
-        <td colspan="6" class="border-t border-slate-800/60 bg-slate-900/20 px-4 py-2 text-xs text-slate-400">
+        <td colspan="7" class="border-t border-slate-800/60 bg-slate-900/20 px-4 py-2 text-xs text-slate-400">
           {{.Notes}}
         </td>
       </tr>

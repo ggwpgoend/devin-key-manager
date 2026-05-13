@@ -65,6 +65,9 @@ type Key struct {
 	DailyCyclesUsedThisWeek int
 	WeekResetAt             *time.Time
 	LastUsedAt              *time.Time
+	LastCheckedAt           *time.Time
+	LastCheckStatus         string
+	LastCheckError          string
 	Notes                   string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
@@ -160,10 +163,7 @@ func (r *Repo) Create(ctx context.Context, in CreateInput) (Key, error) {
 
 // List returns all keys ordered by creation time descending.
 func (r *Repo) List(ctx context.Context) ([]Key, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT
-        id, label, plan_type, api_key_fingerprint, state,
-        cooldown_until, daily_cycles_used_this_week, week_reset_at,
-        last_used_at, notes, created_at, updated_at
+	rows, err := r.db.QueryContext(ctx, `SELECT `+keyColumns+`
         FROM keys ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("keys: list: %w", err)
@@ -182,11 +182,7 @@ func (r *Repo) List(ctx context.Context) ([]Key, error) {
 
 // Get loads a single key by ID.
 func (r *Repo) Get(ctx context.Context, id string) (Key, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT
-        id, label, plan_type, api_key_fingerprint, state,
-        cooldown_until, daily_cycles_used_this_week, week_reset_at,
-        last_used_at, notes, created_at, updated_at
-        FROM keys WHERE id = ?`, id)
+	row := r.db.QueryRowContext(ctx, `SELECT `+keyColumns+` FROM keys WHERE id = ?`, id)
 	k, err := scanKey(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Key{}, ErrNotFound
@@ -253,6 +249,14 @@ func (r *Repo) Reveal(ctx context.Context, id string) (string, error) {
 	return r.cipher.DecryptString(encrypted)
 }
 
+// keyColumns is the canonical column list used by every SELECT that returns a
+// full Key row. Defined once so additions only require one diff.
+const keyColumns = `
+        id, label, plan_type, api_key_fingerprint, state,
+        cooldown_until, daily_cycles_used_this_week, week_reset_at,
+        last_used_at, last_checked_at, last_check_status, last_check_error,
+        notes, created_at, updated_at`
+
 // rowScanner is implemented by both *sql.Row and *sql.Rows so scanKey can
 // service both single and multi-row queries.
 type rowScanner interface {
@@ -261,17 +265,19 @@ type rowScanner interface {
 
 func scanKey(s rowScanner) (Key, error) {
 	var (
-		k         Key
-		planStr   string
-		stateStr  string
-		cooldown  sql.NullTime
-		weekReset sql.NullTime
-		lastUsed  sql.NullTime
+		k           Key
+		planStr     string
+		stateStr    string
+		cooldown    sql.NullTime
+		weekReset   sql.NullTime
+		lastUsed    sql.NullTime
+		lastChecked sql.NullTime
 	)
 	if err := s.Scan(
 		&k.ID, &k.Label, &planStr, &k.Fingerprint, &stateStr,
 		&cooldown, &k.DailyCyclesUsedThisWeek, &weekReset,
-		&lastUsed, &k.Notes, &k.CreatedAt, &k.UpdatedAt,
+		&lastUsed, &lastChecked, &k.LastCheckStatus, &k.LastCheckError,
+		&k.Notes, &k.CreatedAt, &k.UpdatedAt,
 	); err != nil {
 		return Key{}, fmt.Errorf("keys: scan: %w", err)
 	}
@@ -289,7 +295,53 @@ func scanKey(s rowScanner) (Key, error) {
 		t := lastUsed.Time
 		k.LastUsedAt = &t
 	}
+	if lastChecked.Valid {
+		t := lastChecked.Time
+		k.LastCheckedAt = &t
+	}
 	return k, nil
+}
+
+// CheckOutcome bundles the result of a single key validity check.
+type CheckOutcome struct {
+	// State is the new persisted state for the key. Pass StateActive for a
+	// healthy key, StateDead for an unauthorised key, StateCooldownDaily for
+	// a key that ran out of quota.
+	State State
+	// Status is a short, machine-stable tag shown in the UI (e.g. "valid",
+	// "unauthorized", "quota_exhausted", "rate_limited", "network_error").
+	Status string
+	// CooldownUntil overrides the cooldown timestamp; pass nil to clear it.
+	CooldownUntil *time.Time
+	// Error is the human-readable error message, or empty on success.
+	Error string
+}
+
+// ApplyCheckOutcome persists the result of a validity check: state, cooldown,
+// last_checked_at, last_check_status, last_check_error. Always bumps
+// last_checked_at to now() so the UI shows liveness even if the state did not
+// change.
+func (r *Repo) ApplyCheckOutcome(ctx context.Context, id string, out CheckOutcome) error {
+	now := r.now().UTC()
+	var cooldown sql.NullTime
+	if out.CooldownUntil != nil {
+		cooldown = sql.NullTime{Time: out.CooldownUntil.UTC(), Valid: true}
+	}
+	res, err := r.db.ExecContext(ctx, `UPDATE keys SET
+        state = ?, cooldown_until = ?, last_checked_at = ?,
+        last_check_status = ?, last_check_error = ?, updated_at = ?
+        WHERE id = ?`,
+		string(out.State), cooldown, now,
+		out.Status, out.Error, now,
+		id)
+	if err != nil {
+		return fmt.Errorf("keys: apply check outcome: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func isUniqueViolation(err error) bool {

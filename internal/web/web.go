@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -141,9 +142,11 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/", s.handleKeysCreate)
 		r.Get("/new", s.handleKeysNewDialog)
 		r.Get("/dialog/close", s.handleKeysDialogClose)
+		r.Post("/check-all", s.handleKeysCheckAll)
 		r.Get("/{id}/edit", s.handleKeysEditDialog)
 		r.Put("/{id}", s.handleKeysUpdate)
 		r.Delete("/{id}", s.handleKeysDelete)
+		r.Post("/{id}/check", s.handleKeysCheck)
 	})
 
 	r.Route("/tasks", func(r chi.Router) {
@@ -264,6 +267,62 @@ func (s *Server) handleKeysDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderPartial(w, "keys_table", pageData{Keys: all})
+}
+
+// handleKeysCheck validates a single key on demand and re-renders the keys
+// page so the user immediately sees the updated status pill.
+func (s *Server) handleKeysCheck(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	res, err := s.manager.CheckKey(r.Context(), id)
+	if errors.Is(err, keys.ErrNotFound) {
+		http.Error(w, "key not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	flash := fmt.Sprintf("%s: %s", res.Label, res.Status)
+	if res.Error != "" {
+		flash = fmt.Sprintf("%s: %s — %s", res.Label, res.Status, res.Error)
+	}
+	s.redirect(w, r, "/keys?flash="+urlEncode(flash))
+}
+
+// handleKeysCheckAll runs the validator against every key in the pool and
+// renders a flash summarising the results.
+func (s *Server) handleKeysCheckAll(w http.ResponseWriter, r *http.Request) {
+	results, err := s.manager.CheckAllKeys(r.Context())
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	flash := summariseCheckResults(results)
+	s.redirect(w, r, "/keys?flash="+urlEncode(flash))
+}
+
+func summariseCheckResults(results []manager.CheckResult) string {
+	if len(results) == 0 {
+		return "No keys to check."
+	}
+	counts := map[devin.ValidateStatus]int{}
+	for _, r := range results {
+		counts[r.Status]++
+	}
+	parts := []string{fmt.Sprintf("Checked %d keys", len(results))}
+	for _, status := range []devin.ValidateStatus{
+		devin.ValidateValid, devin.ValidateQuotaExhausted, devin.ValidateRateLimited,
+		devin.ValidateUnauthorized, devin.ValidateNetworkError, devin.ValidateAPIError,
+	} {
+		if n := counts[status]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, status))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+func urlEncode(s string) string {
+	return url.QueryEscape(s)
 }
 
 // --- /tasks handlers ---

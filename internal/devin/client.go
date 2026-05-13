@@ -111,6 +111,54 @@ func (c *Client) SendMessage(ctx context.Context, sessionID, text string) error 
 	return c.do(ctx, http.MethodPost, "/session/"+url.PathEscape(sessionID)+"/message", SendMessageRequest{Message: text}, nil)
 }
 
+// Validate performs a lightweight authenticated probe of the Devin API to
+// determine whether the configured key is healthy. It calls GET /v1/sessions
+// with limit=1 (the cheapest authenticated endpoint) and classifies the result
+// into one of the ValidateStatus constants.
+//
+// Unlike the rest of the client, Validate does not return a Go error — it
+// returns a populated ValidateResult for every outcome (success, auth failure,
+// quota exhaustion, transport error, etc.) so callers can switch on Status
+// without unwrapping.
+func (c *Client) Validate(ctx context.Context) ValidateResult {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/sessions?limit=1", nil)
+	if err != nil {
+		return ValidateResult{Status: ValidateNetworkError, Error: err.Error()}
+	}
+	req.Header.Set("Accept", "application/json")
+	c.setCommonHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return ValidateResult{Status: ValidateNetworkError, Error: err.Error()}
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return classifyValidate(resp.StatusCode, body)
+}
+
+func classifyValidate(code int, body []byte) ValidateResult {
+	switch {
+	case code >= 200 && code < 300:
+		return ValidateResult{Status: ValidateValid, HTTPStatus: code}
+	case code == http.StatusPaymentRequired:
+		return ValidateResult{Status: ValidateQuotaExhausted, HTTPStatus: code, Error: "quota exhausted (HTTP 402)"}
+	case code == http.StatusTooManyRequests:
+		if looksLikeQuota(body) {
+			return ValidateResult{Status: ValidateQuotaExhausted, HTTPStatus: code, Error: "quota exhausted (HTTP 429)"}
+		}
+		return ValidateResult{Status: ValidateRateLimited, HTTPStatus: code, Error: "rate limited (HTTP 429)"}
+	case code == http.StatusUnauthorized || code == http.StatusForbidden:
+		return ValidateResult{Status: ValidateUnauthorized, HTTPStatus: code, Error: "unauthorized (HTTP " + fmt.Sprint(code) + ")"}
+	default:
+		return ValidateResult{
+			Status:     ValidateAPIError,
+			HTTPStatus: code,
+			Error:      "api error " + httpStatusText(code) + ": " + truncate(string(body), 200),
+		}
+	}
+}
+
 // UploadAttachment posts a file to /v1/attachments and returns the URL Devin
 // expects to receive in subsequent prompts. The Reader is consumed eagerly.
 func (c *Client) UploadAttachment(ctx context.Context, filename string, body io.Reader) (string, error) {

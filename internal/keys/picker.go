@@ -23,10 +23,7 @@ var ErrNoActiveKey = errors.New("keys: no active key available")
 // never set) are considered. Returns ErrNoActiveKey when nothing matches.
 func (r *Repo) Pick(ctx context.Context) (Key, error) {
 	now := r.now().UTC()
-	row := r.db.QueryRowContext(ctx, `SELECT
-        id, label, plan_type, api_key_fingerprint, state,
-        cooldown_until, daily_cycles_used_this_week, week_reset_at,
-        last_used_at, notes, created_at, updated_at
+	row := r.db.QueryRowContext(ctx, `SELECT `+keyColumns+`
         FROM keys
         WHERE state = 'active'
           AND (cooldown_until IS NULL OR cooldown_until <= ?)
