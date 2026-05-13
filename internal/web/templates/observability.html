@@ -1,0 +1,290 @@
+{{define "content"}}
+<section class="space-y-4">
+  <header class="flex items-end justify-between gap-4 flex-wrap">
+    <div>
+      <h1 class="text-xl font-semibold tracking-tight">Observability</h1>
+      <p class="text-sm text-slate-400">Time-series, state breakdowns, and per-task session graphs. Cost / ACU is intentionally absent — Devin's API doesn't expose it yet.</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <label class="text-xs text-slate-400">Bucket</label>
+      <select id="obs-bucket" class="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm">
+        <option value="hour">Hour</option>
+        <option value="day">Day</option>
+      </select>
+      <label class="text-xs text-slate-400">Window</label>
+      <select id="obs-window" class="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm">
+        <option value="24">24h</option>
+        <option value="72">3d</option>
+        <option value="168">7d</option>
+        <option value="336">14d</option>
+      </select>
+      <button id="obs-refresh" class="rounded bg-indigo-500 px-3 py-1 text-sm font-medium text-white hover:bg-indigo-400">Refresh</button>
+    </div>
+  </header>
+
+  <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+    <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <div class="flex items-baseline justify-between">
+        <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-300">Sessions started</h2>
+        <span class="text-xs text-slate-500" id="obs-sessions-total">—</span>
+      </div>
+      <svg id="obs-sessions" class="mt-3 w-full" height="160" viewBox="0 0 600 160" preserveAspectRatio="none"></svg>
+    </div>
+
+    <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <div class="flex items-baseline justify-between">
+        <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-300">Messages (~= requests)</h2>
+        <span class="text-xs text-slate-500" id="obs-messages-total">—</span>
+      </div>
+      <svg id="obs-messages" class="mt-3 w-full" height="160" viewBox="0 0 600 160" preserveAspectRatio="none"></svg>
+    </div>
+
+    <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <div class="flex items-baseline justify-between">
+        <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-300">Handoffs (= key rotations)</h2>
+        <span class="text-xs text-slate-500" id="obs-handoffs-total">—</span>
+      </div>
+      <svg id="obs-handoffs" class="mt-3 w-full" height="160" viewBox="0 0 600 160" preserveAspectRatio="none"></svg>
+    </div>
+
+    <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <div class="flex items-baseline justify-between">
+        <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-300">New tasks</h2>
+        <span class="text-xs text-slate-500" id="obs-tasks-total">—</span>
+      </div>
+      <svg id="obs-tasks" class="mt-3 w-full" height="160" viewBox="0 0 600 160" preserveAspectRatio="none"></svg>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+    <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-300">Sessions by status</h2>
+      <ul id="obs-states" class="mt-3 space-y-1 text-sm"></ul>
+    </div>
+
+    <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+      <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-300">Top keys by usage</h2>
+      <table id="obs-topkeys" class="mt-3 w-full text-sm">
+        <thead class="text-xs uppercase tracking-wider text-slate-500">
+          <tr><th class="py-1 text-left">Label</th><th class="py-1">Plan</th><th class="py-1">State</th><th class="py-1 text-right">Requests</th></tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+    <div class="flex items-center justify-between gap-3 flex-wrap">
+      <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-300">Session graph (per task)</h2>
+      <div class="flex items-center gap-2">
+        <label class="text-xs text-slate-400">Task</label>
+        <select id="obs-task" class="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm min-w-[14rem]">
+          <option value="">— pick a task —</option>
+          {{range .TasksAll}}
+          <option value="{{.ID}}">{{.Title}} · {{.Status}}</option>
+          {{end}}
+        </select>
+      </div>
+    </div>
+    <p class="mt-2 text-xs text-slate-500">Each circle is one Devin session; arrows are handoffs. Color = session status. Use this to see how a long task chained across keys.</p>
+    <svg id="obs-graph" class="mt-3 w-full" height="280" viewBox="0 0 1200 280"></svg>
+    <p id="obs-graph-status" class="mt-1 text-xs text-slate-500">No task selected.</p>
+  </div>
+</section>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const fmtTs = ts => {
+    const d = new Date(ts);
+    if (isNaN(d)) return ts;
+    return d.toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' });
+  };
+
+  function drawSparkline(svg, points, color){
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    if (!points.length) {
+      const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+      t.setAttribute('x', '300'); t.setAttribute('y', '80');
+      t.setAttribute('text-anchor','middle'); t.setAttribute('fill','#475569');
+      t.setAttribute('font-size','12'); t.textContent = 'No data in selected window.';
+      svg.appendChild(t);
+      return;
+    }
+    const max = Math.max(1, ...points.map(p => p.count));
+    const w = 600, h = 160, pad = 8;
+    const stepX = (w - pad*2) / Math.max(1, points.length-1);
+    const yFor = c => h - pad - (c/max) * (h - pad*2);
+    let d = '';
+    points.forEach((p, i) => {
+      const x = pad + i*stepX;
+      const y = yFor(p.count);
+      d += (i === 0 ? 'M' : ' L') + ' ' + x.toFixed(1) + ' ' + y.toFixed(1);
+    });
+    // Filled area
+    const area = document.createElementNS('http://www.w3.org/2000/svg','path');
+    area.setAttribute('d', d + ' L ' + (pad + (points.length-1)*stepX).toFixed(1) + ' ' + (h-pad) + ' L ' + pad + ' ' + (h-pad) + ' Z');
+    area.setAttribute('fill', color); area.setAttribute('opacity','0.18');
+    svg.appendChild(area);
+    // Line
+    const line = document.createElementNS('http://www.w3.org/2000/svg','path');
+    line.setAttribute('d', d); line.setAttribute('fill','none');
+    line.setAttribute('stroke', color); line.setAttribute('stroke-width','2');
+    svg.appendChild(line);
+    // Last point
+    const last = points[points.length-1];
+    const cx = pad + (points.length-1)*stepX;
+    const cy = yFor(last.count);
+    const dot = document.createElementNS('http://www.w3.org/2000/svg','circle');
+    dot.setAttribute('cx', cx); dot.setAttribute('cy', cy);
+    dot.setAttribute('r', '3'); dot.setAttribute('fill', color);
+    svg.appendChild(dot);
+    // X-axis hint
+    const lbl = document.createElementNS('http://www.w3.org/2000/svg','text');
+    lbl.setAttribute('x', w - pad); lbl.setAttribute('y', h - 2);
+    lbl.setAttribute('text-anchor','end'); lbl.setAttribute('fill','#64748b');
+    lbl.setAttribute('font-size','10'); lbl.textContent = fmtTs(last.bucket_start);
+    svg.appendChild(lbl);
+  }
+
+  async function fetchSeries(metric, bucket, hours){
+    const url = '/api/observability/timeseries?metric='+metric+'&bucket='+bucket+'&window_hours='+hours;
+    const r = await fetch(url);
+    if (!r.ok) return { points: [] };
+    return r.json();
+  }
+
+  async function refreshAll(){
+    const bucket = $('obs-bucket').value;
+    const hours  = $('obs-window').value;
+    const want = [
+      ['sessions','#60a5fa'],
+      ['messages','#34d399'],
+      ['handoffs','#fbbf24'],
+      ['tasks','#a78bfa'],
+    ];
+    for (const [m, c] of want){
+      const s = await fetchSeries(m, bucket, hours);
+      drawSparkline($('obs-'+m), s.points || [], c);
+      const total = (s.points || []).reduce((a,p) => a + p.count, 0);
+      $('obs-'+m+'-total').textContent = total + ' total';
+    }
+    // States
+    const br = await fetch('/api/observability/state-breakdown?window_hours='+hours);
+    if (br.ok){
+      const j = await br.json();
+      const ul = $('obs-states');
+      ul.innerHTML = '';
+      const order = ['running','completed','failed','blocked','quota_exhausted','handoff_pending','handoff_done','creating'];
+      const colors = { running:'#34d399', completed:'#60a5fa', failed:'#f87171', blocked:'#fbbf24', quota_exhausted:'#fb923c', creating:'#cbd5e1', handoff_pending:'#a78bfa', handoff_done:'#7c3aed' };
+      const counts = j.counts || {};
+      const keys = order.filter(k => counts[k]).concat(Object.keys(counts).filter(k => !order.includes(k)));
+      if (!keys.length){ ul.innerHTML = '<li class="text-slate-500 text-sm">No sessions in window.</li>'; }
+      keys.forEach(k => {
+        const li = document.createElement('li');
+        li.className = 'flex items-center gap-2';
+        const dot = '<span style="display:inline-block;width:10px;height:10px;border-radius:9999px;background:'+(colors[k]||'#94a3b8')+';"></span>';
+        li.innerHTML = dot + ' <span class="font-mono text-xs text-slate-300">'+k+'</span><span class="text-slate-400 text-sm flex-1 text-right">'+counts[k]+'</span>';
+        ul.appendChild(li);
+      });
+    }
+    // Top keys
+    const tk = await fetch('/api/observability/top-keys?limit=8');
+    if (tk.ok){
+      const j = await tk.json();
+      const tbody = document.querySelector('#obs-topkeys tbody');
+      tbody.innerHTML = '';
+      (j.keys || []).forEach(k => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td class="py-1">'+escapeHTML(k.label||k.id)+'</td>'
+                     + '<td class="py-1 text-center font-mono text-xs">'+escapeHTML(k.plan)+'</td>'
+                     + '<td class="py-1 text-center font-mono text-xs">'+escapeHTML(k.state)+'</td>'
+                     + '<td class="py-1 text-right font-mono">'+k.requests+'</td>';
+        tbody.appendChild(tr);
+      });
+    }
+  }
+
+  function escapeHTML(s){
+    return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  async function drawSessionGraph(taskId){
+    const svg = $('obs-graph');
+    const status = $('obs-graph-status');
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    if (!taskId){ status.textContent = 'No task selected.'; return; }
+    status.textContent = 'Loading…';
+    const r = await fetch('/api/observability/session-graph/'+encodeURIComponent(taskId));
+    if (!r.ok){ status.textContent = 'Failed: '+(await r.text()); return; }
+    const g = await r.json();
+    if (!g.nodes || !g.nodes.length){ status.textContent = 'Task has no sessions yet.'; return; }
+    // Layout: linear left-to-right ordered by started_at.
+    const w = 1200, h = 280;
+    const radius = 28;
+    const pad = 60;
+    const n = g.nodes.length;
+    const xStep = (w - pad*2) / Math.max(1, n-1);
+    const positions = {};
+    const colors = { running:'#34d399', completed:'#60a5fa', failed:'#f87171', blocked:'#fbbf24', quota_exhausted:'#fb923c', creating:'#cbd5e1', handoff_pending:'#a78bfa', handoff_done:'#7c3aed' };
+    g.nodes.forEach((node, i) => {
+      const x = pad + i*xStep;
+      const y = h/2;
+      positions[node.id] = { x, y };
+    });
+    // Edges first (so they sit underneath nodes)
+    g.edges.forEach(e => {
+      const a = positions[e.from], b = positions[e.to];
+      if (!a || !b) return;
+      const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+      const midY = a.y - 40;
+      path.setAttribute('d', 'M '+a.x+' '+a.y+' Q '+((a.x+b.x)/2)+' '+midY+' '+b.x+' '+b.y);
+      path.setAttribute('stroke','#94a3b8'); path.setAttribute('stroke-width','2');
+      path.setAttribute('fill','none');
+      path.setAttribute('marker-end','url(#obs-arrow)');
+      svg.appendChild(path);
+    });
+    // Marker def
+    const defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+    defs.innerHTML = '<marker id="obs-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" /></marker>';
+    svg.appendChild(defs);
+    // Nodes
+    g.nodes.forEach(node => {
+      const p = positions[node.id];
+      const grp = document.createElementNS('http://www.w3.org/2000/svg','g');
+      const c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+      c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', radius);
+      c.setAttribute('fill', (colors[node.status]||'#94a3b8'));
+      c.setAttribute('stroke', 'rgba(255,255,255,0.2)'); c.setAttribute('stroke-width','2');
+      grp.appendChild(c);
+      const t1 = document.createElementNS('http://www.w3.org/2000/svg','text');
+      t1.setAttribute('x', p.x); t1.setAttribute('y', p.y + 4);
+      t1.setAttribute('text-anchor','middle'); t1.setAttribute('fill','#0f172a');
+      t1.setAttribute('font-size','10'); t1.setAttribute('font-weight','700');
+      t1.textContent = node.key_label ? node.key_label.slice(0,8) : node.key_id.slice(0,6);
+      grp.appendChild(t1);
+      const t2 = document.createElementNS('http://www.w3.org/2000/svg','text');
+      t2.setAttribute('x', p.x); t2.setAttribute('y', p.y + radius + 14);
+      t2.setAttribute('text-anchor','middle'); t2.setAttribute('fill','#cbd5e1');
+      t2.setAttribute('font-size','10');
+      t2.textContent = node.status;
+      grp.appendChild(t2);
+      const t3 = document.createElementNS('http://www.w3.org/2000/svg','text');
+      t3.setAttribute('x', p.x); t3.setAttribute('y', p.y - radius - 6);
+      t3.setAttribute('text-anchor','middle'); t3.setAttribute('fill','#64748b');
+      t3.setAttribute('font-size','9');
+      t3.textContent = fmtTs(node.started_at);
+      grp.appendChild(t3);
+      svg.appendChild(grp);
+    });
+    status.textContent = g.nodes.length + ' sessions · ' + g.edges.length + ' handoffs';
+  }
+
+  $('obs-refresh').addEventListener('click', refreshAll);
+  $('obs-bucket').addEventListener('change', refreshAll);
+  $('obs-window').addEventListener('change', refreshAll);
+  $('obs-task').addEventListener('change', () => drawSessionGraph($('obs-task').value));
+  refreshAll();
+})();
+</script>
+{{end}}
