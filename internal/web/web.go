@@ -28,23 +28,67 @@ var templatesFS embed.FS
 type Server struct {
 	logger        *slog.Logger
 	keys          *keys.Repo
-	templates     *template.Template
+	pages         map[string]*template.Template
+	partials      *template.Template
 	masterKeyPath string
+}
+
+// pageContentFiles enumerates the content templates that render as full pages.
+// Each entry is parsed alongside layout.html into its own *template.Template so
+// that multiple pages can each define a {{define "content"}} block without
+// clashing in a single shared parse tree.
+var pageContentFiles = map[string]string{
+	"keys_index": "templates/keys_index.html",
+}
+
+// partialFiles enumerates the HTMX partial templates rendered without the
+// layout chrome (dialogs, table fragments, etc.). They share a single parse
+// tree because their {{define ...}} names do not collide.
+var partialFiles = []string{
+	"templates/keys_index.html",
+	"templates/keys_form.html",
 }
 
 // NewServer compiles templates and prepares the handler. masterKeyPath is
 // shown in the footer so users always know where their encryption key lives.
 func NewServer(logger *slog.Logger, repo *keys.Repo, masterKeyPath string) (*Server, error) {
-	tpl, err := template.New("").Funcs(template.FuncMap{
-		"now": time.Now,
-	}).ParseFS(templatesFS, "templates/*.html")
+	layoutBody, err := templatesFS.ReadFile("templates/layout.html")
 	if err != nil {
-		return nil, fmt.Errorf("web: parse templates: %w", err)
+		return nil, fmt.Errorf("web: read layout: %w", err)
 	}
+
+	pages := make(map[string]*template.Template, len(pageContentFiles))
+	for name, path := range pageContentFiles {
+		contentBody, err := templatesFS.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("web: read %s: %w", path, err)
+		}
+		tpl := template.New(name).Funcs(template.FuncMap{"now": time.Now})
+		if _, err := tpl.Parse(string(layoutBody)); err != nil {
+			return nil, fmt.Errorf("web: parse layout for %s: %w", name, err)
+		}
+		if _, err := tpl.Parse(string(contentBody)); err != nil {
+			return nil, fmt.Errorf("web: parse content for %s: %w", name, err)
+		}
+		pages[name] = tpl
+	}
+
+	partials := template.New("partials").Funcs(template.FuncMap{"now": time.Now})
+	for _, path := range partialFiles {
+		body, err := templatesFS.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("web: read partial %s: %w", path, err)
+		}
+		if _, err := partials.Parse(string(body)); err != nil {
+			return nil, fmt.Errorf("web: parse partial %s: %w", path, err)
+		}
+	}
+
 	return &Server{
 		logger:        logger,
 		keys:          repo,
-		templates:     tpl,
+		pages:         pages,
+		partials:      partials,
 		masterKeyPath: masterKeyPath,
 	}, nil
 }
@@ -86,7 +130,7 @@ func (s *Server) handleKeysIndex(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.render(w, r, "keys_index.html", pageData{
+	s.renderPage(w, r, "keys_index", pageData{
 		Title:         "Keys",
 		Active:        "keys",
 		Version:       version.Version,
@@ -193,32 +237,21 @@ func (s *Server) redirect(w http.ResponseWriter, r *http.Request, to string) {
 	http.Redirect(w, r, to, http.StatusSeeOther)
 }
 
-func (s *Server) render(w http.ResponseWriter, _ *http.Request, contentTemplate string, data pageData) {
-	t, err := s.templates.Clone()
-	if err != nil {
-		http.Error(w, "template clone", http.StatusInternalServerError)
-		return
-	}
-	// Re-parse the requested content file under the well-known name "content"
-	// so layout.html can reference it via {{template "content"}}.
-	contentBody, err := templatesFS.ReadFile("templates/" + contentTemplate)
-	if err != nil {
-		http.Error(w, "template read: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if _, err := t.Parse(string(contentBody)); err != nil {
-		http.Error(w, "template parse: "+err.Error(), http.StatusInternalServerError)
+func (s *Server) renderPage(w http.ResponseWriter, _ *http.Request, pageName string, data pageData) {
+	tpl, ok := s.pages[pageName]
+	if !ok {
+		http.Error(w, "unknown page "+pageName, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := t.ExecuteTemplate(w, "layout", data); err != nil {
-		s.logger.Error("render", "template", contentTemplate, "err", err)
+	if err := tpl.ExecuteTemplate(w, "layout", data); err != nil {
+		s.logger.Error("render", "page", pageName, "err", err)
 	}
 }
 
 func (s *Server) renderPartial(w http.ResponseWriter, partialName string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, partialName, data); err != nil {
+	if err := s.partials.ExecuteTemplate(w, partialName, data); err != nil {
 		s.logger.Error("partial render", "partial", partialName, "err", err)
 	}
 }
