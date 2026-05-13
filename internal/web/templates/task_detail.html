@@ -60,4 +60,47 @@
   </div>
   {{end}}
 </section>
+
+{{if .Handoffs}}
+<section class="mt-8">
+  <h2 class="text-base font-semibold">Handoffs ({{len .Handoffs}})</h2>
+  <p class="mt-1 text-xs text-slate-500">Each row links the session whose key ran out to the fresh session the manager spun up to continue.</p>
+  <div class="mt-3 overflow-hidden rounded-lg border border-slate-800">
+    <table class="min-w-full divide-y divide-slate-800 text-sm">
+      <thead class="bg-slate-900/60 text-xs uppercase tracking-wider text-slate-400">
+        <tr>
+          <th class="px-4 py-3 text-left">When</th>
+          <th class="px-4 py-3 text-left">From</th>
+          <th class="px-4 py-3 text-left">To</th>
+          <th class="px-4 py-3 text-right">Markdown</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-800 bg-slate-950/40">
+        {{range .Handoffs}}
+        <tr class="hover:bg-slate-900/40">
+          <td class="px-4 py-3 text-slate-400">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+          <td class="px-4 py-3">
+            {{if .FromSessionID}}
+              <a href="/sessions/{{.FromSessionID}}" class="font-mono text-xs text-indigo-300 hover:text-indigo-200">{{.FromSessionID}}</a>
+            {{else}}
+              <span class="text-slate-500">—</span>
+            {{end}}
+          </td>
+          <td class="px-4 py-3">
+            {{if .ToSessionID}}
+              <a href="/sessions/{{.ToSessionID}}" class="font-mono text-xs text-indigo-300 hover:text-indigo-200">{{.ToSessionID}}</a>
+            {{else}}
+              <span class="text-slate-500">pending</span>
+            {{end}}
+          </td>
+          <td class="px-4 py-3 text-right">
+            <a href="/handoffs/{{.ID}}" target="_blank" class="text-xs text-indigo-300 hover:text-indigo-200">view</a>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}
 {{end}}

@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/ggwpgoend/devin-key-manager/internal/devin"
+	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/manager"
 	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
@@ -35,6 +36,7 @@ type Server struct {
 	keys          *keys.Repo
 	tasks         *tasks.Repo
 	sessions      *sessions.Repo
+	handoffs      *handoffs.Repo
 	manager       *manager.Manager
 	pages         map[string]*template.Template
 	partials      *template.Template
@@ -67,6 +69,7 @@ type Deps struct {
 	Keys     *keys.Repo
 	Tasks    *tasks.Repo
 	Sessions *sessions.Repo
+	Handoffs *handoffs.Repo
 	Manager  *manager.Manager
 }
 
@@ -112,6 +115,7 @@ func NewServer(logger *slog.Logger, deps Deps, masterKeyPath string) (*Server, e
 		keys:          deps.Keys,
 		tasks:         deps.Tasks,
 		sessions:      deps.Sessions,
+		handoffs:      deps.Handoffs,
 		manager:       deps.Manager,
 		pages:         pages,
 		partials:      partials,
@@ -162,6 +166,11 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/{id}/messages", s.handleSessionMessages)
 		r.Post("/{id}/messages", s.handleSessionSend)
 		r.Post("/{id}/sync", s.handleSessionSync)
+		r.Post("/{id}/rotate", s.handleSessionRotate)
+	})
+
+	r.Route("/handoffs", func(r chi.Router) {
+		r.Get("/{id}", s.handleHandoffDetail)
 	})
 
 	return r
@@ -395,6 +404,11 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
+	handoffList, err := s.handoffs.ListByTask(r.Context(), id)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
 	rows := make([]sessionRow, 0, len(sess))
 	for _, sx := range sess {
 		k, err := s.keys.Get(r.Context(), sx.KeyID)
@@ -418,6 +432,7 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 		Task:          task,
 		Sessions:      sess,
 		SessionRows:   rows,
+		Handoffs:      handoffList,
 	})
 }
 
@@ -434,6 +449,7 @@ func (s *Server) handleSessionChat(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
+	view.Flash = r.URL.Query().Get("flash")
 	s.renderPage(w, r, "session_chat", view)
 }
 
@@ -485,6 +501,69 @@ func (s *Server) handleSessionSync(w http.ResponseWriter, r *http.Request) {
 	s.renderPartial(w, "chat_messages", view)
 }
 
+// handleSessionRotate is the user-driven "Rotate now" button. It mints a
+// fresh session on the next active key, seeds it with a handoff prompt, and
+// redirects the browser to the new chat.
+func (s *Server) handleSessionRotate(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	res, err := s.manager.ForceRotate(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sessions.ErrNotFound) {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, keys.ErrNoActiveKey) {
+			s.redirect(w, r, "/sessions/"+id+"?flash="+urlEncode("No replacement key available. Add one or wait for a cooldown to expire."))
+			return
+		}
+		s.logger.Warn("rotate failed", "session_id", id, "err", err)
+		s.redirect(w, r, "/sessions/"+id+"?flash="+urlEncode("Rotation failed: "+err.Error()))
+		return
+	}
+	s.redirect(w, r, "/sessions/"+res.ToSession.ID+"?flash="+urlEncode("Rotated to "+res.NewKey.Label+"."))
+}
+
+// handleHandoffDetail renders the full markdown body of a handoff so the user
+// can inspect what context was carried over.
+func (s *Server) handleHandoffDetail(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	hoff, err := s.findHandoffByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, handoffs.ErrNotFound) {
+			http.Error(w, "handoff not found", http.StatusNotFound)
+			return
+		}
+		s.serverError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, hoff.Markdown)
+}
+
+// findHandoffByID is a thin lookup helper for the detail handler. We don't
+// expose Get directly on handoffs.Repo yet — the only callers today need
+// either the chain for a task or the handoff that begat a specific session.
+func (s *Server) findHandoffByID(ctx context.Context, handoffID string) (handoffs.Handoff, error) {
+	// Walk every task's handoff chain until we find the id. Cheap because
+	// this is only called when the user clicks an explicit "view" link.
+	tasksAll, err := s.tasks.List(ctx)
+	if err != nil {
+		return handoffs.Handoff{}, err
+	}
+	for _, t := range tasksAll {
+		list, err := s.handoffs.ListByTask(ctx, t.ID)
+		if err != nil {
+			return handoffs.Handoff{}, err
+		}
+		for _, h := range list {
+			if h.ID == handoffID {
+				return h, nil
+			}
+		}
+	}
+	return handoffs.Handoff{}, handoffs.ErrNotFound
+}
+
 func (s *Server) loadSessionView(ctx context.Context, id string) (pageData, error) {
 	sess, err := s.sessions.Get(ctx, id)
 	if err != nil {
@@ -512,17 +591,40 @@ func (s *Server) loadSessionView(ctx context.Context, id string) (pageData, erro
 		composer.Hint = "This session is closed. Open a new task to continue."
 	}
 
+	// Surface the inbound handoff (if any) so the chat view shows where
+	// this session was resumed from.
+	var inbound handoffs.Handoff
+	if hoff, herr := s.handoffs.GetForSession(ctx, sess.ID); herr == nil {
+		inbound = hoff
+	} else if !errors.Is(herr, handoffs.ErrNotFound) {
+		s.logger.Warn("load inbound handoff", "session_id", sess.ID, "err", herr)
+	}
+
+	// And the outbound handoff (where this dying session rotated to).
+	var outbound handoffs.Handoff
+	outboundList, err := s.handoffs.ListByTask(ctx, sess.TaskID)
+	if err == nil {
+		for _, h := range outboundList {
+			if h.FromSessionID == sess.ID && h.ToSessionID != "" {
+				outbound = h
+				break
+			}
+		}
+	}
+
 	return pageData{
-		Title:         "Chat · " + task.Title,
-		Active:        "tasks",
-		Version:       version.Version,
-		MasterKeyPath: s.masterKeyPath,
-		Task:          task,
-		Session:       sess,
-		Key:           key,
-		Messages:      msgs,
-		StatusLabel:   string(sess.Status),
-		Composer:      composer,
+		Title:           "Chat · " + task.Title,
+		Active:          "tasks",
+		Version:         version.Version,
+		MasterKeyPath:   s.masterKeyPath,
+		Task:            task,
+		Session:         sess,
+		Key:             key,
+		Messages:        msgs,
+		StatusLabel:     string(sess.Status),
+		Composer:        composer,
+		InboundHandoff:  inbound,
+		OutboundHandoff: outbound,
 	}, nil
 }
 
@@ -591,13 +693,16 @@ type pageData struct {
 	Task        tasks.Task
 	Sessions    []sessions.Session
 	SessionRows []sessionRow
+	Handoffs    []handoffs.Handoff
 
 	// Session chat.
-	Session     sessions.Session
-	Key         keys.Key
-	Messages    []sessions.Message
-	StatusLabel string
-	Composer    composerData
+	Session         sessions.Session
+	Key             keys.Key
+	Messages        []sessions.Message
+	StatusLabel     string
+	Composer        composerData
+	InboundHandoff  handoffs.Handoff
+	OutboundHandoff handoffs.Handoff
 }
 
 // dialogData is passed to dialog-style partial templates (keys_form, task_form).

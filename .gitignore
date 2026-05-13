@@ -26,3 +26,7 @@ Thumbs.db
 *.test
 *.out
 coverage.txt
+
+# Ephemeral test artifacts
+TEST_PLAN.md
+/mockdevin/

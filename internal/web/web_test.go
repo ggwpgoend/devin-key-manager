@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/ggwpgoend/devin-key-manager/internal/crypto"
+	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/manager"
 	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
@@ -35,10 +36,11 @@ func newTestServer(t *testing.T) http.Handler {
 	keysRepo := keys.NewRepo(db, c)
 	tasksRepo := tasks.NewRepo(db)
 	sessionsRepo := sessions.NewRepo(db)
-	mgr := manager.New(keysRepo, tasksRepo, sessionsRepo, manager.Options{})
+	handoffsRepo := handoffs.NewRepo(db)
+	mgr := manager.New(keysRepo, tasksRepo, sessionsRepo, handoffsRepo, manager.Options{})
 	srv, err := web.NewServer(
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		web.Deps{Keys: keysRepo, Tasks: tasksRepo, Sessions: sessionsRepo, Manager: mgr},
+		web.Deps{Keys: keysRepo, Tasks: tasksRepo, Sessions: sessionsRepo, Handoffs: handoffsRepo, Manager: mgr},
 		"/tmp/test.key",
 	)
 	if err != nil {

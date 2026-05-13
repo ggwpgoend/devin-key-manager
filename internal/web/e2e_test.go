@@ -15,6 +15,7 @@ import (
 
 	"github.com/ggwpgoend/devin-key-manager/internal/crypto"
 	"github.com/ggwpgoend/devin-key-manager/internal/devin"
+	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/manager"
 	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
@@ -76,10 +77,11 @@ func TestEndToEndTaskFlow(t *testing.T) {
 	keysRepo := keys.NewRepo(db, cipher)
 	tasksRepo := tasks.NewRepo(db)
 	sessionsRepo := sessions.NewRepo(db)
+	handoffsRepo := handoffs.NewRepo(db)
 	factory := func(apiKey string) *devin.Client {
 		return devin.NewClient(apiKey, devin.WithBaseURL(mock.URL))
 	}
-	mgr := manager.New(keysRepo, tasksRepo, sessionsRepo, manager.Options{
+	mgr := manager.New(keysRepo, tasksRepo, sessionsRepo, handoffsRepo, manager.Options{
 		ClientFactory: factory,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
@@ -90,7 +92,7 @@ func TestEndToEndTaskFlow(t *testing.T) {
 	}
 	srv, err := web.NewServer(
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		web.Deps{Keys: keysRepo, Tasks: tasksRepo, Sessions: sessionsRepo, Manager: mgr},
+		web.Deps{Keys: keysRepo, Tasks: tasksRepo, Sessions: sessionsRepo, Handoffs: handoffsRepo, Manager: mgr},
 		filepath.Join(dir, "master.key"),
 	)
 	if err != nil {
