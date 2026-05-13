@@ -186,14 +186,15 @@ func TestFiles_DownloadAllZip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("zip reader: %v", err)
 	}
-	if len(zr.File) != 2 {
-		t.Fatalf("zip entries=%d want 2 (%v)", len(zr.File), zr.File)
+	// 2 files + 1 manifest = 3 entries (#19 audit trail).
+	if len(zr.File) != 3 {
+		t.Fatalf("zip entries=%d want 3 (files+manifest) (%v)", len(zr.File), zr.File)
 	}
 	names := map[string]bool{}
 	for _, fh := range zr.File {
 		names[fh.Name] = true
 	}
-	if !names["config.json"] || !names["snap.png"] {
+	if !names["config.json"] || !names["snap.png"] || !names["_manifest.txt"] {
 		t.Errorf("unexpected zip names: %v", names)
 	}
 }

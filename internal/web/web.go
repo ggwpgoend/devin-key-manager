@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -622,29 +623,63 @@ func (s *Server) handleSessionFilesZip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="session-%s.zip"`, sess.ID))
+	w.Header().Set("Content-Disposition", contentDispositionAttachment(fmt.Sprintf("session-%s.zip", sess.ID)))
 	zw := zip.NewWriter(w)
 	defer zw.Close()
 	used := make(map[string]int)
+	var skipped []string
 	for _, a := range list {
 		if a.Status != artifacts.StatusReady || a.LocalPath == "" {
+			continue
+		}
+		// Open + stat the file BEFORE creating a zip entry. If the file
+		// disappeared or the disk is unhappy, we'd rather skip the
+		// artifact and note it in the summary than write a zip entry
+		// whose header claims N bytes followed by a truncated payload
+		// (which leaves a corrupt CRC and unzip errors at the recipient).
+		fh, ferr := os.Open(a.LocalPath)
+		if ferr != nil {
+			s.logger.Warn("zip open file", "path", a.LocalPath, "err", ferr)
+			skipped = append(skipped, fmt.Sprintf("%s: open failed: %v", a.Filename, ferr))
 			continue
 		}
 		name := uniqueZipName(a.Filename, used)
 		fw, werr := zw.Create(name)
 		if werr != nil {
+			_ = fh.Close()
 			s.logger.Warn("zip create entry", "err", werr)
-			continue
-		}
-		fh, ferr := os.Open(a.LocalPath)
-		if ferr != nil {
-			s.logger.Warn("zip open file", "path", a.LocalPath, "err", ferr)
+			skipped = append(skipped, fmt.Sprintf("%s: zip create failed: %v", a.Filename, werr))
 			continue
 		}
 		if _, cerr := io.Copy(fw, fh); cerr != nil {
+			// The entry header is already in the stream; we can't yank it
+			// out. archive/zip's data descriptor will record whatever bytes
+			// we wrote, so the resulting entry's CRC will mismatch the
+			// truncated payload. Note it in skipped[] and keep going so the
+			// other files still land in the archive.
 			s.logger.Warn("zip copy file", "path", a.LocalPath, "err", cerr)
+			skipped = append(skipped, fmt.Sprintf("%s: copy truncated at byte position: %v", a.Filename, cerr))
 		}
 		_ = fh.Close()
+	}
+	// Always include a summary entry — empty when everything succeeded —
+	// so users can audit what made it into the archive without having to
+	// cross-reference the UI. The presence/absence of names in skipped is
+	// also how we surface partial failures (#19).
+	if fw, werr := zw.Create("_manifest.txt"); werr == nil {
+		var b strings.Builder
+		fmt.Fprintf(&b, "session-id: %s\n", sess.ID)
+		fmt.Fprintf(&b, "generated-at: %s\n", time.Now().UTC().Format(time.RFC3339))
+		fmt.Fprintf(&b, "included: %d\n", len(used))
+		if len(skipped) > 0 {
+			b.WriteString("\n# Skipped entries:\n")
+			for _, s := range skipped {
+				b.WriteString("- ")
+				b.WriteString(s)
+				b.WriteString("\n")
+			}
+		}
+		_, _ = fw.Write([]byte(b.String()))
 	}
 }
 
@@ -757,6 +792,18 @@ func (s *Server) handleArtifactPreview(w http.ResponseWriter, r *http.Request) {
 		body = body[:previewMaxBytes]
 		view.PreviewTooBig = true
 	}
+	// Sanitise non-UTF-8 input. Some artifacts come back as Windows-1251
+	// dumps, Latin-1 logs, or binary-with-text-extension; rendering those
+	// directly in the page would leak U+FFFD-laden mojibake into the
+	// browser's source viewer. We detect invalid UTF-8 and fall back to
+	// the "preview unavailable" branch so the user gets a clean download
+	// link instead of garbled text.
+	if !utf8.Valid(body) {
+		view.PreviewBinary = true
+		view.PreviewError = "file is not valid UTF-8 — preview unavailable (use Download)"
+		s.renderPage(w, r, "artifact_preview", view)
+		return
+	}
 	view.PreviewBody = string(body)
 	s.renderPage(w, r, "artifact_preview", view)
 }
@@ -784,7 +831,7 @@ func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, asAttachm
 		w.Header().Set("Content-Type", a.ContentType)
 	}
 	if asAttachment {
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, a.Filename))
+		w.Header().Set("Content-Disposition", contentDispositionAttachment(a.Filename))
 	}
 	http.ServeFile(w, r, a.LocalPath)
 }

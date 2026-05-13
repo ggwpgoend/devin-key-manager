@@ -2,11 +2,51 @@ package web
 
 import (
 	"fmt"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode/utf8"
 )
+
+// contentDispositionAttachment builds a Content-Disposition header that is
+// safe to ship for filenames containing any UTF-8 bytes (Cyrillic, CJK,
+// emoji, spaces, quotes, …). We follow RFC 6266 §4.1 / RFC 5987:
+//
+//   - filename="…" gets an ASCII-stripped fallback for legacy clients.
+//   - filename*=UTF-8''… carries the real UTF-8 name, percent-encoded.
+//
+// Modern browsers prefer filename* when both are present, so the visible
+// download name in Chrome/Firefox/Edge is the actual filename, while
+// dinosaur clients still get a sensible (mangled) ASCII version.
+func contentDispositionAttachment(filename string) string {
+	ascii := asciiFallback(filename)
+	if ascii == "" {
+		ascii = "download"
+	}
+	return fmt.Sprintf(`attachment; filename=%q; filename*=UTF-8''%s`, ascii, url.PathEscape(filename))
+}
+
+// asciiFallback returns a header-safe ASCII rendition of name. Non-ASCII
+// runes are replaced with '_' so quoting in a `filename="…"` parameter
+// is safe, and CR/LF/DQUOTE are stripped to avoid header injection.
+func asciiFallback(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r == '\r' || r == '\n' || r == '"':
+			b.WriteByte('_')
+		case r < 0x20 || r == 0x7f:
+			b.WriteByte('_')
+		case r < utf8.RuneSelf:
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
 
 // uniqueZipName returns a filename that hasn't been used yet in the current
 // zip archive. If the requested name collides, we append "-2", "-3", … before
