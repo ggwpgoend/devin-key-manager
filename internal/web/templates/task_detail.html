@@ -1,0 +1,63 @@
+{{define "content"}}
+<div class="flex items-start justify-between gap-4">
+  <div class="min-w-0">
+    <div class="text-xs uppercase tracking-wider text-slate-500">Task</div>
+    <h1 class="mt-1 text-2xl font-semibold truncate">{{.Task.Title}}</h1>
+    <div class="mt-2 flex items-center gap-2 text-xs text-slate-400">
+      <span class="pill {{if eq (printf "%s" .Task.Status) "running"}}bg-emerald-900/40 text-emerald-200
+                        {{else if eq (printf "%s" .Task.Status) "completed"}}bg-sky-900/40 text-sky-200
+                        {{else if eq (printf "%s" .Task.Status) "failed"}}bg-rose-900/40 text-rose-200
+                        {{else}}bg-slate-800 text-slate-300{{end}}">{{.Task.Status}}</span>
+      <span>Created {{.Task.CreatedAt.Format "2006-01-02 15:04"}}</span>
+    </div>
+  </div>
+  <a href="/tasks" class="text-sm text-slate-400 hover:text-white">← Tasks</a>
+</div>
+
+<section class="mt-6 rounded-lg border border-slate-800 bg-slate-900/40 p-5">
+  <div class="text-xs uppercase tracking-wider text-slate-500">Initial prompt</div>
+  <pre class="mt-2 whitespace-pre-wrap text-sm text-slate-200">{{.Task.InitialPrompt}}</pre>
+</section>
+
+<section class="mt-8">
+  <h2 class="text-base font-semibold">Sessions ({{len .Sessions}})</h2>
+  {{if not .Sessions}}
+  <div class="mt-4 rounded-md border border-dashed border-slate-700 bg-slate-900/40 px-4 py-6 text-sm text-slate-400">
+    No sessions yet. This task has just been queued.
+  </div>
+  {{else}}
+  <div class="mt-4 overflow-hidden rounded-lg border border-slate-800">
+    <table class="min-w-full divide-y divide-slate-800 text-sm">
+      <thead class="bg-slate-900/60 text-xs uppercase tracking-wider text-slate-400">
+        <tr>
+          <th class="px-4 py-3 text-left">Key</th>
+          <th class="px-4 py-3 text-left">Devin session</th>
+          <th class="px-4 py-3 text-left">Status</th>
+          <th class="px-4 py-3 text-left">Started</th>
+          <th class="px-4 py-3 text-right">Open</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-800 bg-slate-950/40">
+        {{range .SessionRows}}
+        <tr class="hover:bg-slate-900/40">
+          <td class="px-4 py-3 text-slate-300">{{.KeyLabel}}</td>
+          <td class="px-4 py-3 font-mono text-xs text-slate-400">{{if .DevinSessionID}}{{.DevinSessionID}}{{else}}—{{end}}</td>
+          <td class="px-4 py-3">
+            <span class="pill {{if eq .Status "running"}}bg-emerald-900/40 text-emerald-200
+                              {{else if eq .Status "completed"}}bg-sky-900/40 text-sky-200
+                              {{else if eq .Status "failed"}}bg-rose-900/40 text-rose-200
+                              {{else if eq .Status "quota_exhausted"}}bg-amber-900/40 text-amber-200
+                              {{else}}bg-slate-800 text-slate-300{{end}}">{{.Status}}</span>
+          </td>
+          <td class="px-4 py-3 text-slate-400">{{.StartedAt.Format "2006-01-02 15:04"}}</td>
+          <td class="px-4 py-3 text-right">
+            <a href="/sessions/{{.ID}}" class="text-indigo-300 hover:text-indigo-200">chat</a>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+</section>
+{{end}}

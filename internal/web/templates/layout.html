@@ -20,8 +20,8 @@
       </div>
       <nav class="flex items-center gap-4 text-sm">
         <a href="/keys" class="{{if eq .Active "keys"}}text-white{{else}}text-slate-400 hover:text-white{{end}}">Keys</a>
-        <span class="text-slate-700">Tasks (PR-2)</span>
-        <span class="text-slate-700">Sessions (PR-2)</span>
+        <a href="/tasks" class="{{if eq .Active "tasks"}}text-white{{else}}text-slate-400 hover:text-white{{end}}">Tasks</a>
+        <span class="{{if eq .Active "sessions"}}text-white{{else}}text-slate-700{{end}}">Sessions</span>
       </nav>
     </div>
   </header>

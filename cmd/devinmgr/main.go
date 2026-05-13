@@ -16,7 +16,10 @@ import (
 	"github.com/ggwpgoend/devin-key-manager/internal/config"
 	"github.com/ggwpgoend/devin-key-manager/internal/crypto"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
+	"github.com/ggwpgoend/devin-key-manager/internal/manager"
+	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
 	"github.com/ggwpgoend/devin-key-manager/internal/store"
+	"github.com/ggwpgoend/devin-key-manager/internal/tasks"
 	"github.com/ggwpgoend/devin-key-manager/internal/version"
 	"github.com/ggwpgoend/devin-key-manager/internal/web"
 )
@@ -53,8 +56,24 @@ func run() error {
 	}
 	defer db.Close()
 
-	repo := keys.NewRepo(db, cipher)
-	srv, err := web.NewServer(logger, repo, cfg.MasterKeyPath)
+	keysRepo := keys.NewRepo(db, cipher)
+	tasksRepo := tasks.NewRepo(db)
+	sessionsRepo := sessions.NewRepo(db)
+	mgr := manager.New(keysRepo, tasksRepo, sessionsRepo, manager.Options{Logger: logger})
+
+	poller := manager.NewPoller(mgr, sessionsRepo, logger, manager.PollerOptions{})
+	go func() {
+		if err := poller.Run(ctx); err != nil {
+			logger.Warn("poller exited", "err", err)
+		}
+	}()
+
+	srv, err := web.NewServer(logger, web.Deps{
+		Keys:     keysRepo,
+		Tasks:    tasksRepo,
+		Sessions: sessionsRepo,
+		Manager:  mgr,
+	}, cfg.MasterKeyPath)
 	if err != nil {
 		return fmt.Errorf("init server: %w", err)
 	}
