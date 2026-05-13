@@ -121,7 +121,11 @@ func NewServer(logger *slog.Logger, deps Deps, masterKeyPath string) (*Server, e
 		return nil, fmt.Errorf("web: read layout: %w", err)
 	}
 
-	funcs := template.FuncMap{"now": time.Now}
+	funcs := template.FuncMap{
+		"now":  time.Now,
+		"add1": func(i int) int { return i + 1 },
+		"sub1": func(i int) int { return i - 1 },
+	}
 
 	pages := make(map[string]*template.Template, len(pageContentFiles))
 	for name, path := range pageContentFiles {
@@ -305,6 +309,12 @@ func (s *Server) Handler() http.Handler {
 	// PR-17: artifact retention + pinning.
 	r.Post("/api/artifacts/{id}/pin", s.handleArtifactPin)
 	r.Post("/api/artifacts/retention/sweep", s.handleArtifactRetentionSweep)
+
+	// PR-18 (B20 + D34): smart resume and artifact diff.
+	r.Post("/api/sessions/{id}/diagnose", s.handleSessionDiagnose)
+	r.Post("/api/sessions/{id}/resume", s.handleSessionResume)
+	r.Get("/api/sessions/{id}/versions", s.handleSessionArtifactVersions)
+	r.Get("/api/artifacts/diff", s.handleArtifactDiff)
 
 	r.Route("/pipeline-runs", func(r chi.Router) {
 		r.Get("/{run_id}", s.handlePipelineRunDetail)
@@ -816,11 +826,18 @@ func (s *Server) handleSessionFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var list []artifacts.Artifact
+	var versionGroups []artifacts.VersionGroup
 	if s.artifacts != nil {
 		list, err = s.artifacts.ListBySession(r.Context(), sess.ID)
 		if err != nil {
 			s.serverError(w, r, err)
 			return
+		}
+		// PR-18 / D34: surface files that exist in multiple versions
+		// so the user can diff them inline. Failure here is non-fatal
+		// — we just don't show the section.
+		if groups, vErr := s.artifacts.VersionsByName(r.Context(), sess.ID); vErr == nil {
+			versionGroups = groups
 		}
 	}
 	s.renderPage(w, r, "session_files", pageData{
@@ -832,6 +849,7 @@ func (s *Server) handleSessionFiles(w http.ResponseWriter, r *http.Request) {
 		Session:        sess,
 		Artifacts:      list,
 		ArtifactGroups: groupArtifacts(list),
+		VersionGroups:  versionGroups,
 		Flash:          r.URL.Query().Get("flash"),
 	})
 }
@@ -1086,8 +1104,12 @@ type pageData struct {
 	// PR-17 / roadmap D35: visual grouping of artifacts in the gallery
 	// view. The handler pre-computes these so the template stays free
 	// of grouping logic.
-	ArtifactGroups  []artifactGroup
-	StatusLabel     string
+	ArtifactGroups []artifactGroup
+	// PR-18 / roadmap D34: artifacts that share a filename within this
+	// session — surfaces the "different versions of the same file"
+	// pattern that Devin produces when iterating on output.
+	VersionGroups []artifacts.VersionGroup
+	StatusLabel   string
 	Composer        composerData
 	InboundHandoff  handoffs.Handoff
 	OutboundHandoff handoffs.Handoff
