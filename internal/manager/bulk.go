@@ -4,10 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/ggwpgoend/devin-key-manager/internal/devin"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 )
+
+// bulkDetectConcurrency caps how many DetectPlan calls run in parallel
+// during BulkImport. Devin's API has no documented rate limit but a wide
+// fan-out from a personal-use box would still look hostile in their
+// logs. 8 gives a ~8x speedup for a typical paste of 20 keys without
+// risking either client-side socket exhaustion or server-side throttling.
+const bulkDetectConcurrency = 8
 
 // BulkImportOutcome categorises what happened to a single line. Used by the
 // UI to colour the result table.
@@ -55,38 +63,94 @@ type BulkImportResult struct {
 // returned slice.
 func (m *Manager) BulkImport(ctx context.Context, payload string) ([]BulkImportResult, error) {
 	lines := keys.ParseBulk(payload)
-	results := make([]BulkImportResult, 0, len(lines))
-	for _, ln := range lines {
-		res := BulkImportResult{LineNo: ln.LineNo, Label: ln.Label}
+	results := make([]BulkImportResult, len(lines))
+
+	// detection holds the auto-detect outcome for each line. Slots where
+	// the line specified a plan or failed earlier are left zero-value.
+	type detection struct {
+		plan         keys.Plan
+		status       devin.ValidateStatus
+		unauthorized bool
+	}
+	detections := make([]detection, len(lines))
+
+	// Stage 1: pre-fill parse-failure rows and figure out which lines
+	// need an HTTP detect call. We do this serially because it's cheap
+	// and ordering matters for the result slice.
+	type detectJob struct {
+		idx    int
+		apiKey string
+	}
+	var jobs []detectJob
+	for i, ln := range lines {
+		results[i] = BulkImportResult{LineNo: ln.LineNo, Label: ln.Label}
 		if ln.Error != "" {
-			res.Outcome = BulkOutcomeParseError
-			res.Error = ln.Error
-			results = append(results, res)
+			results[i].Outcome = BulkOutcomeParseError
+			results[i].Error = ln.Error
 			continue
 		}
 		if ln.APIKey == "" {
-			res.Outcome = BulkOutcomeBadInput
-			res.Error = "empty api key"
-			results = append(results, res)
+			results[i].Outcome = BulkOutcomeBadInput
+			results[i].Error = "empty api key"
 			continue
 		}
+		if ln.Plan != "" {
+			continue
+		}
+		jobs = append(jobs, detectJob{idx: i, apiKey: ln.APIKey})
+	}
 
+	// Stage 2: parallel DetectPlan across the unknown-plan lines. We
+	// fan out up to bulkDetectConcurrency goroutines; the work-stealing
+	// channel pattern keeps per-call latency from compounding.
+	if len(jobs) > 0 {
+		jobCh := make(chan detectJob)
+		var wg sync.WaitGroup
+		workers := bulkDetectConcurrency
+		if workers > len(jobs) {
+			workers = len(jobs)
+		}
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := range jobCh {
+					detected, status, _ := m.DetectPlan(ctx, j.apiKey)
+					detections[j.idx] = detection{
+						plan:         detected,
+						status:       status,
+						unauthorized: status == devin.ValidateUnauthorized,
+					}
+				}
+			}()
+		}
+		for _, j := range jobs {
+			jobCh <- j
+		}
+		close(jobCh)
+		wg.Wait()
+	}
+
+	// Stage 3: serial insert. SQLite's WAL handles concurrent writers,
+	// but the Create path also does dedup lookups; we keep this serial
+	// to avoid surprising the caller with reordered duplicate handling.
+	for i, ln := range lines {
+		if results[i].Outcome != "" {
+			// Parse/empty failures already populated.
+			continue
+		}
 		plan := ln.Plan
 		if plan == "" {
-			detected, status, _ := m.DetectPlan(ctx, ln.APIKey)
-			res.DetectedAs = detected
-			switch status {
-			case devin.ValidateUnauthorized:
-				res.Outcome = BulkOutcomeUnauthorized
-				res.Error = "unauthorized: " + ln.Label
-				results = append(results, res)
+			d := detections[i]
+			results[i].DetectedAs = d.plan
+			if d.unauthorized {
+				results[i].Outcome = BulkOutcomeUnauthorized
+				results[i].Error = "unauthorized: " + ln.Label
 				continue
-			case devin.ValidateNetworkError:
-				// Couldn't reach Devin — still proceed with default plan
-				// (trial) so the user can sort it out later. We mark the
-				// outcome unreachable+created if insert succeeds below.
 			}
-			plan = detected
+			// Network error path: fall through with whatever DetectPlan
+			// returned (typically PlanTrial — conservative default).
+			plan = d.plan
 		}
 
 		k, err := m.keys.Create(ctx, keys.CreateInput{
@@ -96,18 +160,16 @@ func (m *Manager) BulkImport(ctx context.Context, payload string) ([]BulkImportR
 		})
 		if err != nil {
 			if errors.Is(err, keys.ErrDuplicateKey) {
-				res.Outcome = BulkOutcomeDuplicate
-				res.Error = "fingerprint already in pool"
+				results[i].Outcome = BulkOutcomeDuplicate
+				results[i].Error = "fingerprint already in pool"
 			} else {
-				res.Outcome = BulkOutcomeBadInput
-				res.Error = err.Error()
+				results[i].Outcome = BulkOutcomeBadInput
+				results[i].Error = err.Error()
 			}
-			results = append(results, res)
 			continue
 		}
-		res.Outcome = BulkOutcomeCreated
-		res.Key = k
-		results = append(results, res)
+		results[i].Outcome = BulkOutcomeCreated
+		results[i].Key = k
 	}
 	return results, nil
 }
