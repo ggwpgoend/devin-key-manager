@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/ggwpgoend/devin-key-manager/internal/artifacts"
 	"github.com/ggwpgoend/devin-key-manager/internal/devin"
 	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
@@ -37,6 +38,7 @@ type Server struct {
 	tasks         *tasks.Repo
 	sessions      *sessions.Repo
 	handoffs      *handoffs.Repo
+	artifacts     *artifacts.Repo
 	manager       *manager.Manager
 	pages         map[string]*template.Template
 	partials      *template.Template
@@ -48,10 +50,11 @@ type Server struct {
 // that multiple pages can each define a {{define "content"}} block without
 // clashing in a single shared parse tree.
 var pageContentFiles = map[string]string{
-	"keys_index":   "templates/keys_index.html",
-	"tasks_index":  "templates/tasks_index.html",
-	"task_detail":  "templates/task_detail.html",
-	"session_chat": "templates/session_chat.html",
+	"keys_index":    "templates/keys_index.html",
+	"tasks_index":   "templates/tasks_index.html",
+	"task_detail":   "templates/task_detail.html",
+	"session_chat":  "templates/session_chat.html",
+	"session_files": "templates/session_files.html",
 }
 
 // partialFiles enumerates the HTMX partial templates rendered without the
@@ -66,11 +69,12 @@ var partialFiles = []string{
 
 // Deps bundles the repositories and orchestrator the web layer depends on.
 type Deps struct {
-	Keys     *keys.Repo
-	Tasks    *tasks.Repo
-	Sessions *sessions.Repo
-	Handoffs *handoffs.Repo
-	Manager  *manager.Manager
+	Keys      *keys.Repo
+	Tasks     *tasks.Repo
+	Sessions  *sessions.Repo
+	Handoffs  *handoffs.Repo
+	Artifacts *artifacts.Repo
+	Manager   *manager.Manager
 }
 
 // NewServer compiles templates and prepares the handler. masterKeyPath is
@@ -116,6 +120,7 @@ func NewServer(logger *slog.Logger, deps Deps, masterKeyPath string) (*Server, e
 		tasks:         deps.Tasks,
 		sessions:      deps.Sessions,
 		handoffs:      deps.Handoffs,
+		artifacts:     deps.Artifacts,
 		manager:       deps.Manager,
 		pages:         pages,
 		partials:      partials,
@@ -167,6 +172,13 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/{id}/messages", s.handleSessionSend)
 		r.Post("/{id}/sync", s.handleSessionSync)
 		r.Post("/{id}/rotate", s.handleSessionRotate)
+		r.Post("/{id}/snap", s.handleSessionSnap)
+		r.Get("/{id}/files", s.handleSessionFiles)
+	})
+
+	r.Route("/artifacts", func(r chi.Router) {
+		r.Get("/{id}/raw", s.handleArtifactRaw)
+		r.Get("/{id}/download", s.handleArtifactDownload)
 	})
 
 	r.Route("/handoffs", func(r chi.Router) {
@@ -523,6 +535,97 @@ func (s *Server) handleSessionRotate(w http.ResponseWriter, r *http.Request) {
 	s.redirect(w, r, "/sessions/"+res.ToSession.ID+"?flash="+urlEncode("Rotated to "+res.NewKey.Label+"."))
 }
 
+// handleSessionSnap sends the predefined "take a screenshot" prompt to the
+// session's Devin instance. The reply is picked up on the next sync and the
+// downloader saves any image attachment so the chat view can render it inline.
+func (s *Server) handleSessionSnap(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.manager.SnapDesktop(r.Context(), id); err != nil {
+		s.logger.Warn("snap desktop failed", "session_id", id, "err", err)
+		s.redirect(w, r, "/sessions/"+id+"?flash="+urlEncode("Snap failed: "+err.Error()))
+		return
+	}
+	s.redirect(w, r, "/sessions/"+id+"?flash="+urlEncode("Asked Devin for a screenshot. It will appear in chat shortly."))
+}
+
+// handleSessionFiles renders the per-session artifact gallery.
+func (s *Server) handleSessionFiles(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	sess, err := s.sessions.Get(r.Context(), id)
+	if errors.Is(err, sessions.ErrNotFound) {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	task, err := s.tasks.Get(r.Context(), sess.TaskID)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	var list []artifacts.Artifact
+	if s.artifacts != nil {
+		list, err = s.artifacts.ListBySession(r.Context(), sess.ID)
+		if err != nil {
+			s.serverError(w, r, err)
+			return
+		}
+	}
+	s.renderPage(w, r, "session_files", pageData{
+		Title:         "Files \u00b7 " + task.Title,
+		Active:        "tasks",
+		Version:       version.Version,
+		MasterKeyPath: s.masterKeyPath,
+		Task:          task,
+		Session:       sess,
+		Artifacts:     list,
+		Flash:         r.URL.Query().Get("flash"),
+	})
+}
+
+// handleArtifactRaw streams the on-disk artifact body with the recorded
+// Content-Type. Used for inline image rendering in the chat bubble.
+func (s *Server) handleArtifactRaw(w http.ResponseWriter, r *http.Request) {
+	s.serveArtifact(w, r, false)
+}
+
+// handleArtifactDownload behaves like handleArtifactRaw but adds a
+// Content-Disposition header so the browser saves the file rather than
+// rendering it inline.
+func (s *Server) handleArtifactDownload(w http.ResponseWriter, r *http.Request) {
+	s.serveArtifact(w, r, true)
+}
+
+func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, asAttachment bool) {
+	if s.artifacts == nil {
+		http.Error(w, "artifacts disabled", http.StatusNotFound)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	a, err := s.artifacts.Get(r.Context(), id)
+	if errors.Is(err, artifacts.ErrNotFound) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	if a.Status != artifacts.StatusReady || a.LocalPath == "" {
+		http.Error(w, "artifact not yet ready ("+string(a.Status)+")", http.StatusAccepted)
+		return
+	}
+	if a.ContentType != "" {
+		w.Header().Set("Content-Type", a.ContentType)
+	}
+	if asAttachment {
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, a.Filename))
+	}
+	http.ServeFile(w, r, a.LocalPath)
+}
+
 // handleHandoffDetail renders the full markdown body of a handoff so the user
 // can inspect what context was carried over.
 func (s *Server) handleHandoffDetail(w http.ResponseWriter, r *http.Request) {
@@ -536,7 +639,7 @@ func (s *Server) handleHandoffDetail(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	_, _ = io.WriteString(w, hoff.Markdown)
 }
 
@@ -612,6 +715,32 @@ func (s *Server) loadSessionView(ctx context.Context, id string) (pageData, erro
 		}
 	}
 
+	// Group artifacts by remote URL so chat bubbles can render inline
+	// images for any URL they reference.
+	artByURL := map[string]artifacts.Artifact{}
+	var art []artifacts.Artifact
+	if s.artifacts != nil {
+		art, err = s.artifacts.ListBySession(ctx, sess.ID)
+		if err != nil {
+			return pageData{}, err
+		}
+		for _, a := range art {
+			artByURL[a.RemoteURL] = a
+		}
+	}
+
+	// Decorate each message with the artifact rows referenced in its body.
+	decorated := make([]messageView, 0, len(msgs))
+	for _, m := range msgs {
+		mv := messageView{Message: m}
+		for _, eu := range artifacts.ExtractURLs(m.Content) {
+			if a, ok := artByURL[eu.URL]; ok {
+				mv.Artifacts = append(mv.Artifacts, a)
+			}
+		}
+		decorated = append(decorated, mv)
+	}
+
 	return pageData{
 		Title:           "Chat · " + task.Title,
 		Active:          "tasks",
@@ -621,6 +750,8 @@ func (s *Server) loadSessionView(ctx context.Context, id string) (pageData, erro
 		Session:         sess,
 		Key:             key,
 		Messages:        msgs,
+		MessageViews:    decorated,
+		Artifacts:       art,
 		StatusLabel:     string(sess.Status),
 		Composer:        composer,
 		InboundHandoff:  inbound,
@@ -695,14 +826,24 @@ type pageData struct {
 	SessionRows []sessionRow
 	Handoffs    []handoffs.Handoff
 
-	// Session chat.
+	// Session chat / files.
 	Session         sessions.Session
 	Key             keys.Key
 	Messages        []sessions.Message
+	MessageViews    []messageView
+	Artifacts       []artifacts.Artifact
 	StatusLabel     string
 	Composer        composerData
 	InboundHandoff  handoffs.Handoff
 	OutboundHandoff handoffs.Handoff
+}
+
+// messageView pairs a session message with any artifacts referenced from its
+// body. Templates iterate MessageViews instead of raw Messages so chat
+// bubbles can render inline images and download links right under the prose.
+type messageView struct {
+	Message   sessions.Message
+	Artifacts []artifacts.Artifact
 }
 
 // dialogData is passed to dialog-style partial templates (keys_form, task_form).

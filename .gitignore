@@ -30,3 +30,4 @@ coverage.txt
 # Ephemeral test artifacts
 TEST_PLAN.md
 /mockdevin/
+test-report.md
