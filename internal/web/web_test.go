@@ -12,8 +12,12 @@ import (
 	"testing"
 
 	"github.com/ggwpgoend/devin-key-manager/internal/crypto"
+	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
+	"github.com/ggwpgoend/devin-key-manager/internal/manager"
+	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
 	"github.com/ggwpgoend/devin-key-manager/internal/store"
+	"github.com/ggwpgoend/devin-key-manager/internal/tasks"
 	"github.com/ggwpgoend/devin-key-manager/internal/web"
 )
 
@@ -29,8 +33,16 @@ func newTestServer(t *testing.T) http.Handler {
 		t.Fatalf("store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	repo := keys.NewRepo(db, c)
-	srv, err := web.NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)), repo, "/tmp/test.key")
+	keysRepo := keys.NewRepo(db, c)
+	tasksRepo := tasks.NewRepo(db)
+	sessionsRepo := sessions.NewRepo(db)
+	handoffsRepo := handoffs.NewRepo(db)
+	mgr := manager.New(keysRepo, tasksRepo, sessionsRepo, handoffsRepo, manager.Options{})
+	srv, err := web.NewServer(
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		web.Deps{Keys: keysRepo, Tasks: tasksRepo, Sessions: sessionsRepo, Handoffs: handoffsRepo, Manager: mgr},
+		"/tmp/test.key",
+	)
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}

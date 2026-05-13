@@ -1,0 +1,40 @@
+{{define "task_form"}}
+<div class="fixed inset-0 z-40 flex items-start justify-center bg-slate-950/70 backdrop-blur-sm pt-16">
+  <div class="w-full max-w-xl rounded-xl border border-slate-700 bg-slate-900 shadow-xl">
+    <div class="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+      <h2 class="text-base font-semibold">New task</h2>
+      <button
+        class="text-slate-400 hover:text-white"
+        hx-get="/tasks/dialog/close" hx-target="#dialog" hx-swap="innerHTML">✕</button>
+    </div>
+    <form
+      hx-post="/tasks" hx-target="#dialog" hx-swap="innerHTML"
+      class="space-y-4 px-5 py-5 text-sm">
+      <div>
+        <label class="block text-xs font-medium uppercase tracking-wider text-slate-400">Title (optional)</label>
+        <input type="text" name="title" maxlength="120" placeholder="e.g. Build CSV deduper CLI"
+          class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+        <p class="mt-1 text-xs text-slate-500">If blank we'll use the first line of the prompt.</p>
+      </div>
+      <div>
+        <label class="block text-xs font-medium uppercase tracking-wider text-slate-400">Prompt</label>
+        <textarea name="prompt" rows="6" required
+          placeholder="Describe what you want Devin to do. Treat this like the opening message in a chat."
+          class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"></textarea>
+      </div>
+      {{if .Error}}
+      <div class="rounded-md border border-rose-700/50 bg-rose-900/30 px-3 py-2 text-xs text-rose-200">{{.Error}}</div>
+      {{end}}
+      <div class="flex items-center justify-end gap-2 border-t border-slate-800 pt-4">
+        <button type="button"
+          class="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
+          hx-get="/tasks/dialog/close" hx-target="#dialog" hx-swap="innerHTML">Cancel</button>
+        <button type="submit"
+          class="rounded-md bg-indigo-500 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-400">
+          Start task
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+{{end}}

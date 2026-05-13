@@ -11,13 +11,19 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/ggwpgoend/devin-key-manager/internal/devin"
+	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
+	"github.com/ggwpgoend/devin-key-manager/internal/manager"
+	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
+	"github.com/ggwpgoend/devin-key-manager/internal/tasks"
 	"github.com/ggwpgoend/devin-key-manager/internal/version"
 )
 
@@ -28,6 +34,10 @@ var templatesFS embed.FS
 type Server struct {
 	logger        *slog.Logger
 	keys          *keys.Repo
+	tasks         *tasks.Repo
+	sessions      *sessions.Repo
+	handoffs      *handoffs.Repo
+	manager       *manager.Manager
 	pages         map[string]*template.Template
 	partials      *template.Template
 	masterKeyPath string
@@ -38,7 +48,10 @@ type Server struct {
 // that multiple pages can each define a {{define "content"}} block without
 // clashing in a single shared parse tree.
 var pageContentFiles = map[string]string{
-	"keys_index": "templates/keys_index.html",
+	"keys_index":   "templates/keys_index.html",
+	"tasks_index":  "templates/tasks_index.html",
+	"task_detail":  "templates/task_detail.html",
+	"session_chat": "templates/session_chat.html",
 }
 
 // partialFiles enumerates the HTMX partial templates rendered without the
@@ -47,15 +60,28 @@ var pageContentFiles = map[string]string{
 var partialFiles = []string{
 	"templates/keys_index.html",
 	"templates/keys_form.html",
+	"templates/task_form.html",
+	"templates/session_chat.html",
+}
+
+// Deps bundles the repositories and orchestrator the web layer depends on.
+type Deps struct {
+	Keys     *keys.Repo
+	Tasks    *tasks.Repo
+	Sessions *sessions.Repo
+	Handoffs *handoffs.Repo
+	Manager  *manager.Manager
 }
 
 // NewServer compiles templates and prepares the handler. masterKeyPath is
 // shown in the footer so users always know where their encryption key lives.
-func NewServer(logger *slog.Logger, repo *keys.Repo, masterKeyPath string) (*Server, error) {
+func NewServer(logger *slog.Logger, deps Deps, masterKeyPath string) (*Server, error) {
 	layoutBody, err := templatesFS.ReadFile("templates/layout.html")
 	if err != nil {
 		return nil, fmt.Errorf("web: read layout: %w", err)
 	}
+
+	funcs := template.FuncMap{"now": time.Now}
 
 	pages := make(map[string]*template.Template, len(pageContentFiles))
 	for name, path := range pageContentFiles {
@@ -63,7 +89,7 @@ func NewServer(logger *slog.Logger, repo *keys.Repo, masterKeyPath string) (*Ser
 		if err != nil {
 			return nil, fmt.Errorf("web: read %s: %w", path, err)
 		}
-		tpl := template.New(name).Funcs(template.FuncMap{"now": time.Now})
+		tpl := template.New(name).Funcs(funcs)
 		if _, err := tpl.Parse(string(layoutBody)); err != nil {
 			return nil, fmt.Errorf("web: parse layout for %s: %w", name, err)
 		}
@@ -73,7 +99,7 @@ func NewServer(logger *slog.Logger, repo *keys.Repo, masterKeyPath string) (*Ser
 		pages[name] = tpl
 	}
 
-	partials := template.New("partials").Funcs(template.FuncMap{"now": time.Now})
+	partials := template.New("partials").Funcs(funcs)
 	for _, path := range partialFiles {
 		body, err := templatesFS.ReadFile(path)
 		if err != nil {
@@ -86,7 +112,11 @@ func NewServer(logger *slog.Logger, repo *keys.Repo, masterKeyPath string) (*Ser
 
 	return &Server{
 		logger:        logger,
-		keys:          repo,
+		keys:          deps.Keys,
+		tasks:         deps.Tasks,
+		sessions:      deps.Sessions,
+		handoffs:      deps.Handoffs,
+		manager:       deps.Manager,
 		pages:         pages,
 		partials:      partials,
 		masterKeyPath: masterKeyPath,
@@ -103,7 +133,7 @@ func (s *Server) Handler() http.Handler {
 	r.Use(middleware.Compress(5))
 
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/keys", http.StatusFound)
+		http.Redirect(w, r, "/tasks", http.StatusFound)
 	})
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -116,13 +146,37 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/", s.handleKeysCreate)
 		r.Get("/new", s.handleKeysNewDialog)
 		r.Get("/dialog/close", s.handleKeysDialogClose)
+		r.Post("/check-all", s.handleKeysCheckAll)
 		r.Get("/{id}/edit", s.handleKeysEditDialog)
 		r.Put("/{id}", s.handleKeysUpdate)
 		r.Delete("/{id}", s.handleKeysDelete)
+		r.Post("/{id}/check", s.handleKeysCheck)
+	})
+
+	r.Route("/tasks", func(r chi.Router) {
+		r.Get("/", s.handleTasksIndex)
+		r.Post("/", s.handleTasksCreate)
+		r.Get("/new", s.handleTasksNewDialog)
+		r.Get("/dialog/close", s.handleTasksDialogClose)
+		r.Get("/{id}", s.handleTaskDetail)
+	})
+
+	r.Route("/sessions", func(r chi.Router) {
+		r.Get("/{id}", s.handleSessionChat)
+		r.Get("/{id}/messages", s.handleSessionMessages)
+		r.Post("/{id}/messages", s.handleSessionSend)
+		r.Post("/{id}/sync", s.handleSessionSync)
+		r.Post("/{id}/rotate", s.handleSessionRotate)
+	})
+
+	r.Route("/handoffs", func(r chi.Router) {
+		r.Get("/{id}", s.handleHandoffDetail)
 	})
 
 	return r
 }
+
+// --- /keys handlers (unchanged from PR-1) ---
 
 func (s *Server) handleKeysIndex(w http.ResponseWriter, r *http.Request) {
 	all, err := s.keys.List(r.Context())
@@ -145,7 +199,6 @@ func (s *Server) handleKeysNewDialog(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleKeysDialogClose(w http.ResponseWriter, _ *http.Request) {
-	// Returning empty content replaces the dialog container with nothing.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, "")
 }
@@ -225,9 +278,359 @@ func (s *Server) handleKeysDelete(w http.ResponseWriter, r *http.Request) {
 	s.renderPartial(w, "keys_table", pageData{Keys: all})
 }
 
-// redirect handles both the htmx and the plain-form fallback case. htmx
-// inspects the HX-Redirect header to perform a client-side redirect; ordinary
-// browsers see a 303.
+// handleKeysCheck validates a single key on demand and re-renders the keys
+// page so the user immediately sees the updated status pill.
+func (s *Server) handleKeysCheck(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	res, err := s.manager.CheckKey(r.Context(), id)
+	if errors.Is(err, keys.ErrNotFound) {
+		http.Error(w, "key not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	flash := fmt.Sprintf("%s: %s", res.Label, res.Status)
+	if res.Error != "" {
+		flash = fmt.Sprintf("%s: %s — %s", res.Label, res.Status, res.Error)
+	}
+	s.redirect(w, r, "/keys?flash="+urlEncode(flash))
+}
+
+// handleKeysCheckAll runs the validator against every key in the pool and
+// renders a flash summarising the results.
+func (s *Server) handleKeysCheckAll(w http.ResponseWriter, r *http.Request) {
+	results, err := s.manager.CheckAllKeys(r.Context())
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	flash := summariseCheckResults(results)
+	s.redirect(w, r, "/keys?flash="+urlEncode(flash))
+}
+
+func summariseCheckResults(results []manager.CheckResult) string {
+	if len(results) == 0 {
+		return "No keys to check."
+	}
+	counts := map[devin.ValidateStatus]int{}
+	for _, r := range results {
+		counts[r.Status]++
+	}
+	parts := []string{fmt.Sprintf("Checked %d keys", len(results))}
+	for _, status := range []devin.ValidateStatus{
+		devin.ValidateValid, devin.ValidateQuotaExhausted, devin.ValidateRateLimited,
+		devin.ValidateUnauthorized, devin.ValidateNetworkError, devin.ValidateAPIError,
+	} {
+		if n := counts[status]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, status))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+func urlEncode(s string) string {
+	return url.QueryEscape(s)
+}
+
+// --- /tasks handlers ---
+
+func (s *Server) handleTasksIndex(w http.ResponseWriter, r *http.Request) {
+	all, err := s.tasks.List(r.Context())
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	s.renderPage(w, r, "tasks_index", pageData{
+		Title:         "Tasks",
+		Active:        "tasks",
+		Version:       version.Version,
+		MasterKeyPath: s.masterKeyPath,
+		Tasks:         all,
+		Flash:         r.URL.Query().Get("flash"),
+	})
+}
+
+func (s *Server) handleTasksNewDialog(w http.ResponseWriter, _ *http.Request) {
+	s.renderPartial(w, "task_form", dialogData{})
+}
+
+func (s *Server) handleTasksDialogClose(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.WriteString(w, "")
+}
+
+func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	in := manager.StartTaskInput{
+		Title:  r.PostFormValue("title"),
+		Prompt: r.PostFormValue("prompt"),
+	}
+	result, err := s.manager.StartTask(r.Context(), in)
+	if err != nil {
+		msg := err.Error()
+		switch {
+		case errors.Is(err, manager.ErrNoActiveKey):
+			msg = "No active keys available. Add one on the Keys page first."
+		case errors.Is(err, devin.ErrQuotaExhausted):
+			msg = "Selected key has no quota left. Try again after another key becomes active."
+		case errors.Is(err, devin.ErrUnauthorized):
+			msg = "Devin rejected the API key (unauthorized). Check the key value on the Keys page."
+		}
+		s.logger.Warn("start task failed", "err", err)
+		s.renderPartial(w, "task_form", dialogData{Error: msg})
+		return
+	}
+	s.redirect(w, r, "/sessions/"+result.Session.ID)
+}
+
+func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	task, err := s.tasks.Get(r.Context(), id)
+	if errors.Is(err, tasks.ErrNotFound) {
+		http.Error(w, "task not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	sess, err := s.sessions.ListByTask(r.Context(), id)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	handoffList, err := s.handoffs.ListByTask(r.Context(), id)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	rows := make([]sessionRow, 0, len(sess))
+	for _, sx := range sess {
+		k, err := s.keys.Get(r.Context(), sx.KeyID)
+		label := sx.KeyID
+		if err == nil {
+			label = k.Label
+		}
+		rows = append(rows, sessionRow{
+			ID:             sx.ID,
+			KeyLabel:       label,
+			DevinSessionID: sx.DevinSessionID,
+			Status:         string(sx.Status),
+			StartedAt:      sx.StartedAt,
+		})
+	}
+	s.renderPage(w, r, "task_detail", pageData{
+		Title:         task.Title,
+		Active:        "tasks",
+		Version:       version.Version,
+		MasterKeyPath: s.masterKeyPath,
+		Task:          task,
+		Sessions:      sess,
+		SessionRows:   rows,
+		Handoffs:      handoffList,
+	})
+}
+
+// --- /sessions handlers ---
+
+func (s *Server) handleSessionChat(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	view, err := s.loadSessionView(r.Context(), id)
+	if errors.Is(err, sessions.ErrNotFound) {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	view.Flash = r.URL.Query().Get("flash")
+	s.renderPage(w, r, "session_chat", view)
+}
+
+// handleSessionMessages returns the chat_messages partial for HTMX polling.
+func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	view, err := s.loadSessionView(r.Context(), id)
+	if errors.Is(err, sessions.ErrNotFound) {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	s.renderPartial(w, "chat_messages", view)
+}
+
+func (s *Server) handleSessionSend(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	text := r.PostFormValue("text")
+	if err := s.manager.SendFollowUp(r.Context(), id, text); err != nil {
+		s.logger.Warn("send follow up failed", "session_id", id, "err", err)
+		// Render the chat stream regardless so the user sees current state;
+		// the error is surfaced in the log. A future PR will add a flash banner.
+	}
+	view, err := s.loadSessionView(r.Context(), id)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	s.renderPartial(w, "chat_messages", view)
+}
+
+func (s *Server) handleSessionSync(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.manager.SyncSession(r.Context(), id); err != nil {
+		s.logger.Warn("manual sync failed", "session_id", id, "err", err)
+	}
+	view, err := s.loadSessionView(r.Context(), id)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	s.renderPartial(w, "chat_messages", view)
+}
+
+// handleSessionRotate is the user-driven "Rotate now" button. It mints a
+// fresh session on the next active key, seeds it with a handoff prompt, and
+// redirects the browser to the new chat.
+func (s *Server) handleSessionRotate(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	res, err := s.manager.ForceRotate(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sessions.ErrNotFound) {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, keys.ErrNoActiveKey) {
+			s.redirect(w, r, "/sessions/"+id+"?flash="+urlEncode("No replacement key available. Add one or wait for a cooldown to expire."))
+			return
+		}
+		s.logger.Warn("rotate failed", "session_id", id, "err", err)
+		s.redirect(w, r, "/sessions/"+id+"?flash="+urlEncode("Rotation failed: "+err.Error()))
+		return
+	}
+	s.redirect(w, r, "/sessions/"+res.ToSession.ID+"?flash="+urlEncode("Rotated to "+res.NewKey.Label+"."))
+}
+
+// handleHandoffDetail renders the full markdown body of a handoff so the user
+// can inspect what context was carried over.
+func (s *Server) handleHandoffDetail(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	hoff, err := s.findHandoffByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, handoffs.ErrNotFound) {
+			http.Error(w, "handoff not found", http.StatusNotFound)
+			return
+		}
+		s.serverError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, hoff.Markdown)
+}
+
+// findHandoffByID is a thin lookup helper for the detail handler. We don't
+// expose Get directly on handoffs.Repo yet — the only callers today need
+// either the chain for a task or the handoff that begat a specific session.
+func (s *Server) findHandoffByID(ctx context.Context, handoffID string) (handoffs.Handoff, error) {
+	// Walk every task's handoff chain until we find the id. Cheap because
+	// this is only called when the user clicks an explicit "view" link.
+	tasksAll, err := s.tasks.List(ctx)
+	if err != nil {
+		return handoffs.Handoff{}, err
+	}
+	for _, t := range tasksAll {
+		list, err := s.handoffs.ListByTask(ctx, t.ID)
+		if err != nil {
+			return handoffs.Handoff{}, err
+		}
+		for _, h := range list {
+			if h.ID == handoffID {
+				return h, nil
+			}
+		}
+	}
+	return handoffs.Handoff{}, handoffs.ErrNotFound
+}
+
+func (s *Server) loadSessionView(ctx context.Context, id string) (pageData, error) {
+	sess, err := s.sessions.Get(ctx, id)
+	if err != nil {
+		return pageData{}, err
+	}
+	task, err := s.tasks.Get(ctx, sess.TaskID)
+	if err != nil {
+		return pageData{}, err
+	}
+	key, err := s.keys.Get(ctx, sess.KeyID)
+	if err != nil {
+		return pageData{}, err
+	}
+	msgs, err := s.sessions.ListMessages(ctx, sess.ID)
+	if err != nil {
+		return pageData{}, err
+	}
+
+	// Composer disabled when the session is in a terminal state.
+	composer := composerData{}
+	switch sess.Status {
+	case sessions.StatusCompleted, sessions.StatusFailed,
+		sessions.StatusQuotaExhausted, sessions.StatusHandoffDone:
+		composer.Disabled = true
+		composer.Hint = "This session is closed. Open a new task to continue."
+	}
+
+	// Surface the inbound handoff (if any) so the chat view shows where
+	// this session was resumed from.
+	var inbound handoffs.Handoff
+	if hoff, herr := s.handoffs.GetForSession(ctx, sess.ID); herr == nil {
+		inbound = hoff
+	} else if !errors.Is(herr, handoffs.ErrNotFound) {
+		s.logger.Warn("load inbound handoff", "session_id", sess.ID, "err", herr)
+	}
+
+	// And the outbound handoff (where this dying session rotated to).
+	var outbound handoffs.Handoff
+	outboundList, err := s.handoffs.ListByTask(ctx, sess.TaskID)
+	if err == nil {
+		for _, h := range outboundList {
+			if h.FromSessionID == sess.ID && h.ToSessionID != "" {
+				outbound = h
+				break
+			}
+		}
+	}
+
+	return pageData{
+		Title:           "Chat · " + task.Title,
+		Active:          "tasks",
+		Version:         version.Version,
+		MasterKeyPath:   s.masterKeyPath,
+		Task:            task,
+		Session:         sess,
+		Key:             key,
+		Messages:        msgs,
+		StatusLabel:     string(sess.Status),
+		Composer:        composer,
+		InboundHandoff:  inbound,
+		OutboundHandoff: outbound,
+	}, nil
+}
+
+// --- helpers ---
+
+// redirect handles both the htmx and the plain-form fallback case.
 func (s *Server) redirect(w http.ResponseWriter, r *http.Request, to string) {
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", to)
@@ -270,21 +673,58 @@ func (s *Server) requestLogger(next http.Handler) http.Handler {
 	})
 }
 
-// pageData is the common shape passed to full-page renders.
+// pageData is the common shape passed to renders. Fields are populated only
+// where relevant for the current view; templates check zero values where
+// needed.
 type pageData struct {
 	Title         string
 	Active        string
 	Version       string
 	MasterKeyPath string
-	Keys          []keys.Key
 	Flash         string
+
+	// Keys index.
+	Keys []keys.Key
+
+	// Tasks index.
+	Tasks []tasks.Task
+
+	// Task detail.
+	Task        tasks.Task
+	Sessions    []sessions.Session
+	SessionRows []sessionRow
+	Handoffs    []handoffs.Handoff
+
+	// Session chat.
+	Session         sessions.Session
+	Key             keys.Key
+	Messages        []sessions.Message
+	StatusLabel     string
+	Composer        composerData
+	InboundHandoff  handoffs.Handoff
+	OutboundHandoff handoffs.Handoff
 }
 
-// dialogData is passed to the keys_form partial.
+// dialogData is passed to dialog-style partial templates (keys_form, task_form).
 type dialogData struct {
 	Editing bool
 	Key     keys.Key
 	Error   string
+}
+
+// sessionRow flattens the join of sessions + keys for the task detail table.
+type sessionRow struct {
+	ID             string
+	KeyLabel       string
+	DevinSessionID string
+	Status         string
+	StartedAt      time.Time
+}
+
+// composerData controls the chat input form on /sessions/{id}.
+type composerData struct {
+	Disabled bool
+	Hint     string
 }
 
 // Run is a convenience wrapper that starts the HTTP server and blocks until

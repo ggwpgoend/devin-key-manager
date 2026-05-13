@@ -1,0 +1,65 @@
+{{define "content"}}
+<div class="flex items-center justify-between">
+  <div>
+    <h1 class="text-2xl font-semibold">Tasks</h1>
+    <p class="mt-1 text-sm text-slate-400">
+      {{len .Tasks}} task{{if ne (len .Tasks) 1}}s{{end}}.
+      The manager picks an active key automatically (trial → free → paid).
+    </p>
+  </div>
+  <button
+    class="rounded-md bg-indigo-500 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-400"
+    hx-get="/tasks/new" hx-target="#dialog" hx-swap="innerHTML">
+    + New task
+  </button>
+</div>
+
+{{if .Flash}}
+<div class="mt-6 rounded-md border border-emerald-700/40 bg-emerald-900/30 px-4 py-3 text-sm text-emerald-200">
+  {{.Flash}}
+</div>
+{{end}}
+
+{{if not .Tasks}}
+<div class="mt-8 rounded-lg border border-dashed border-slate-700 bg-slate-900/40 p-12 text-center text-sm text-slate-400">
+  No tasks yet. Click <span class="text-indigo-300">New task</span> to submit a prompt — the manager will pick the next available key and open a session for it.
+</div>
+{{else}}
+<div class="mt-6 overflow-hidden rounded-lg border border-slate-800">
+  <table class="min-w-full divide-y divide-slate-800 text-sm">
+    <thead class="bg-slate-900/60 text-xs uppercase tracking-wider text-slate-400">
+      <tr>
+        <th class="px-4 py-3 text-left">Title</th>
+        <th class="px-4 py-3 text-left">Status</th>
+        <th class="px-4 py-3 text-left">Updated</th>
+        <th class="px-4 py-3 text-right">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800 bg-slate-950/40">
+      {{range .Tasks}}
+      <tr class="hover:bg-slate-900/40">
+        <td class="px-4 py-3">
+          <a href="/tasks/{{.ID}}" class="font-medium text-slate-100 hover:text-indigo-300">{{.Title}}</a>
+        </td>
+        <td class="px-4 py-3">
+          <span class="pill {{if eq (printf "%s" .Status) "running"}}bg-emerald-900/40 text-emerald-200
+                            {{else if eq (printf "%s" .Status) "completed"}}bg-sky-900/40 text-sky-200
+                            {{else if eq (printf "%s" .Status) "failed"}}bg-rose-900/40 text-rose-200
+                            {{else if eq (printf "%s" .Status) "paused"}}bg-amber-900/40 text-amber-200
+                            {{else}}bg-slate-800 text-slate-300{{end}}">
+            {{.Status}}
+          </span>
+        </td>
+        <td class="px-4 py-3 text-slate-400">{{.UpdatedAt.Format "2006-01-02 15:04"}}</td>
+        <td class="px-4 py-3 text-right">
+          <a href="/tasks/{{.ID}}" class="text-indigo-300 hover:text-indigo-200">open</a>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+<div id="dialog"></div>
+{{end}}

@@ -15,8 +15,12 @@ import (
 
 	"github.com/ggwpgoend/devin-key-manager/internal/config"
 	"github.com/ggwpgoend/devin-key-manager/internal/crypto"
+	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
+	"github.com/ggwpgoend/devin-key-manager/internal/manager"
+	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
 	"github.com/ggwpgoend/devin-key-manager/internal/store"
+	"github.com/ggwpgoend/devin-key-manager/internal/tasks"
 	"github.com/ggwpgoend/devin-key-manager/internal/version"
 	"github.com/ggwpgoend/devin-key-manager/internal/web"
 )
@@ -53,8 +57,40 @@ func run() error {
 	}
 	defer db.Close()
 
-	repo := keys.NewRepo(db, cipher)
-	srv, err := web.NewServer(logger, repo, cfg.MasterKeyPath)
+	keysRepo := keys.NewRepo(db, cipher)
+	tasksRepo := tasks.NewRepo(db)
+	sessionsRepo := sessions.NewRepo(db)
+	handoffsRepo := handoffs.NewRepo(db)
+	mgr := manager.New(keysRepo, tasksRepo, sessionsRepo, handoffsRepo, manager.Options{Logger: logger})
+
+	poller := manager.NewPoller(mgr, sessionsRepo, logger, manager.PollerOptions{})
+	go func() {
+		if err := poller.Run(ctx); err != nil {
+			logger.Warn("poller exited", "err", err)
+		}
+	}()
+
+	checker := manager.NewChecker(mgr, logger, manager.CheckerOptions{RunOnStart: true})
+	go func() {
+		if err := checker.Run(ctx); err != nil {
+			logger.Warn("checker exited", "err", err)
+		}
+	}()
+
+	reactivator := manager.NewReactivator(mgr, logger, manager.ReactivatorOptions{RunOnStart: true})
+	go func() {
+		if err := reactivator.Run(ctx); err != nil {
+			logger.Warn("reactivator exited", "err", err)
+		}
+	}()
+
+	srv, err := web.NewServer(logger, web.Deps{
+		Keys:     keysRepo,
+		Tasks:    tasksRepo,
+		Sessions: sessionsRepo,
+		Handoffs: handoffsRepo,
+		Manager:  mgr,
+	}, cfg.MasterKeyPath)
 	if err != nil {
 		return fmt.Errorf("init server: %w", err)
 	}
