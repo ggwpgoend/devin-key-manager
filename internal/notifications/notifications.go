@@ -89,6 +89,22 @@ func (r *Repo) Append(ctx context.Context, in AppendInput) (int64, error) {
 	return id, nil
 }
 
+// MaxID returns the highest event id currently in the table, or 0 if the
+// table is empty. Used by the /events/since handler to seed the
+// browser-side cursor on the very first (empty) poll so a fresh page load
+// does not toast historical backlog.
+func (r *Repo) MaxID(ctx context.Context) (int64, error) {
+	var id sql.NullInt64
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT MAX(id) FROM notification_events`).Scan(&id); err != nil {
+		return 0, fmt.Errorf("notifications: max id: %w", err)
+	}
+	if !id.Valid {
+		return 0, nil
+	}
+	return id.Int64, nil
+}
+
 // Since returns up to limit events with id > afterID, ordered ascending so
 // the frontend can replay them in the order they happened.
 func (r *Repo) Since(ctx context.Context, afterID int64, limit int) ([]Event, error) {

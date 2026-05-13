@@ -99,9 +99,12 @@
               if (after > 0) showNotification(e); // skip backlog on first load
               if (e.id > after) localStorage.setItem(STORAGE_KEY, String(e.id));
             }
-            if (data.events.length === 0 && after === 0) {
-              // Initialise the cursor so the very next event triggers a toast.
-              localStorage.setItem(STORAGE_KEY, String(data.now || 0));
+            // First-time cursor seed: server returns last_id (the highest
+            // event id at query time). Compare against event ids — never
+            // against wall-clock timestamps, since they live in different
+            // numeric universes.
+            if (after === 0 && typeof data.last_id === "number" && data.last_id > 0) {
+              localStorage.setItem(STORAGE_KEY, String(data.last_id));
             }
           }
         } catch (_) {

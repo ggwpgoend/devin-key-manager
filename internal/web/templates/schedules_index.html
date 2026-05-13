@@ -37,7 +37,7 @@
           <input type="number" min="0" max="23" name="daily_hour" value="{{.ScheduleForm.DailyHour}}" class="w-16 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm" />
           :
           <input type="number" min="0" max="59" name="daily_minute" value="{{.ScheduleForm.DailyMinute}}" class="w-16 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm" />
-          (local time)
+          <span class="text-xs text-slate-400">(server local time — currently <span class="font-mono">{{.ServerTime}}</span>, zone <span class="font-mono">{{.ServerTZ}}</span>)</span>
         </label>
       </fieldset>
       <button type="submit" class="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500">Create schedule</button>

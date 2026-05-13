@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -196,10 +197,10 @@ func TestSchedules_CreateListToggleDelete(t *testing.T) {
 }
 
 func TestSchedules_RunNow_FiresTaskAndAppendsEvent(t *testing.T) {
-	devinHits := 0
+	var devinHits atomic.Int64
 	devinSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/sessions") && r.Method == http.MethodPost {
-			devinHits++
+			devinHits.Add(1)
 			_, _ = io.WriteString(w, `{"session_id":"devin-mock-sched","url":"https://app.devin.ai/sessions/devin-mock-sched"}`)
 			return
 		}
@@ -231,20 +232,40 @@ func TestSchedules_RunNow_FiresTaskAndAppendsEvent(t *testing.T) {
 	}
 	sch := all[0]
 
-	// POST /schedules/{id}/run -> Manager.StartScheduledTask -> Devin mock fires.
+	// POST /schedules/{id}/run -> async goroutine -> Manager.StartScheduledTask -> Devin mock fires.
 	rr = httptest.NewRecorder()
 	h.handler.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/schedules/"+sch.ID+"/run", nil))
 	if rr.Code != http.StatusSeeOther {
 		t.Fatalf("run: %d body: %s", rr.Code, rr.Body.String())
 	}
-	if devinHits == 0 {
+
+	// The Devin call happens off-request in a goroutine; wait for it to
+	// post (and the resulting MarkRan + Append to complete) before
+	// asserting state. 2 seconds is plenty for an in-process httptest
+	// mock; never reached in the happy path.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if devinHits.Load() > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if devinHits.Load() == 0 {
 		t.Errorf("expected Devin /sessions POST, got 0 hits")
 	}
 
-	// Notification event must be present.
-	evs, err := h.notifs.Recent(context.Background(), 10)
-	if err != nil {
-		t.Fatalf("recent: %v", err)
+	// Notification event must be present (poll for it — also async).
+	var evs []notifications.Event
+	for time.Now().Before(deadline) {
+		var rErr error
+		evs, rErr = h.notifs.Recent(context.Background(), 10)
+		if rErr != nil {
+			t.Fatalf("recent: %v", rErr)
+		}
+		if len(evs) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if len(evs) == 0 {
 		t.Fatalf("no events emitted for manual run")
@@ -263,7 +284,14 @@ func TestSchedules_RunNow_FiresTaskAndAppendsEvent(t *testing.T) {
 	}
 
 	// last_run_at should be set on the schedule row.
-	afterRun, _ := h.repo.Get(context.Background(), sch.ID)
+	var afterRun schedules.Schedule
+	for time.Now().Before(deadline) {
+		afterRun, _ = h.repo.Get(context.Background(), sch.ID)
+		if afterRun.LastRunAt.Valid && afterRun.LastSessionID != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if !afterRun.LastRunAt.Valid {
 		t.Errorf("last_run_at not set after manual run")
 	}
@@ -295,13 +323,16 @@ func TestEventsSince_HighWaterMark(t *testing.T) {
 			ID    int64  `json:"id"`
 			Title string `json:"title"`
 		} `json:"events"`
-		Now int64 `json:"now"`
+		LastID int64 `json:"last_id"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(resp.Events) != 2 || resp.Events[0].ID != id1 || resp.Events[1].ID != id2 {
 		t.Errorf("unexpected events: %+v", resp.Events)
+	}
+	if resp.LastID != id2 {
+		t.Errorf("last_id: want %d, got %d", id2, resp.LastID)
 	}
 
 	// After id1 → only second event.

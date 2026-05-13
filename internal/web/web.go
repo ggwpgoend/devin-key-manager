@@ -860,6 +860,12 @@ type pageData struct {
 	Schedules     []schedules.Schedule
 	ScheduleError string
 	ScheduleForm  scheduleFormData
+	// ServerTime / ServerTZ are echoed back in the schedules form so the
+	// user knows which zone a "daily HH:MM" entry will resolve in. The
+	// scheduler always computes daily fires against time.Local on the
+	// server, which can be UTC in headless setups.
+	ServerTime string
+	ServerTZ   string
 }
 
 // scheduleFormData carries the pre-filled values for the schedules creation

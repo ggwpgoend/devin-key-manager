@@ -29,12 +29,16 @@ func (s *Server) handleSchedulesIndex(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
+	now := time.Now()
+	tz, _ := now.Zone()
 	s.renderPage(w, r, "schedules_index", pageData{
 		Title:         "Schedules",
 		Active:        "schedules",
 		Version:       version.Version,
 		MasterKeyPath: s.masterKeyPath,
 		Schedules:     list,
+		ServerTime:    now.Format("15:04"),
+		ServerTZ:      tz,
 		ScheduleForm: scheduleFormData{
 			Kind:            string(schedules.KindInterval),
 			IntervalSeconds: 3600,
@@ -76,12 +80,16 @@ func (s *Server) handleSchedulesCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := s.schedules.Create(r.Context(), in); err != nil {
 		list, _ := s.schedules.List(r.Context())
+		now := time.Now()
+		tz, _ := now.Zone()
 		s.renderPage(w, r, "schedules_index", pageData{
 			Title:         "Schedules",
 			Active:        "schedules",
 			Version:       version.Version,
 			MasterKeyPath: s.masterKeyPath,
 			Schedules:     list,
+			ServerTime:    now.Format("15:04"),
+			ServerTZ:      tz,
 			ScheduleForm:  form,
 			ScheduleError: err.Error(),
 		})
@@ -113,9 +121,12 @@ func (s *Server) handleSchedulesToggle(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/schedules", http.StatusSeeOther)
 }
 
-// handleSchedulesRunNow fires a schedule immediately. We don't bother
-// updating next_run_at here — the scheduler's MarkRan will recompute it on
-// the next tick.
+// handleSchedulesRunNow fires a schedule immediately. The actual Devin
+// call happens in a detached goroutine so the user's HTTP request returns
+// instantly — closing the browser tab doesn't abort the in-flight create.
+// The schedule row is marked-ran (and a notification appended) once the
+// background work completes; the user observes results through the
+// /schedules list and the notification bell.
 func (s *Server) handleSchedulesRunNow(w http.ResponseWriter, r *http.Request) {
 	if s.schedules == nil || s.manager == nil {
 		http.Error(w, "schedules disabled", http.StatusNotFound)
@@ -131,39 +142,52 @@ func (s *Server) handleSchedulesRunNow(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	sid, runErr := s.manager.StartScheduledTask(r.Context(), sch)
+	go s.runScheduleAsync(sch, true)
+	http.Redirect(w, r, "/schedules?flash="+urlEncode("Run queued — check the bell in a moment."), http.StatusSeeOther)
+}
+
+// runScheduleAsync executes a schedule with its own background context so
+// it survives the originating HTTP request (or scheduler tick) cancelling.
+// Used by both manual run-now and the scheduler tick to avoid coupling
+// long-running Devin calls to the caller's context.
+func (s *Server) runScheduleAsync(sch schedules.Schedule, manual bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	sid, runErr := s.manager.StartScheduledTask(ctx, sch)
 	outcome := schedules.RunOutcome{SessionID: sid}
 	if runErr != nil {
 		outcome.Error = runErr.Error()
 	}
-	if err := s.schedules.MarkRan(r.Context(), id, outcome); err != nil {
-		s.logger.Warn("schedules: mark ran", "id", id, "err", err)
+	if err := s.schedules.MarkRan(ctx, sch.ID, outcome); err != nil {
+		s.logger.Warn("schedules: mark ran", "id", sch.ID, "err", err)
 	}
 	if s.notifs != nil {
-		title := "Scheduled: " + sch.Title + " (manual run)"
+		suffix := ""
+		if manual {
+			suffix = " (manual run)"
+		}
+		title := "Scheduled: " + sch.Title + suffix
 		body := sch.Prompt
-		url := ""
+		urlStr := ""
 		if sid != "" {
-			url = "/sessions/" + sid
+			urlStr = "/sessions/" + sid
 		}
 		if runErr != nil {
 			body = runErr.Error()
 		}
-		if _, err := s.notifs.Append(r.Context(), notifications.AppendInput{
+		if _, err := s.notifs.Append(ctx, notifications.AppendInput{
 			Kind:             notifications.KindScheduleFired,
 			Title:            title,
 			Body:             body,
-			URL:              url,
+			URL:              urlStr,
 			RelatedSessionID: sid,
 		}); err != nil {
-			s.logger.Warn("schedules: notify", "id", id, "err", err)
+			s.logger.Warn("schedules: notify", "id", sch.ID, "err", err)
 		}
 	}
 	if runErr != nil {
-		// Still redirect — error is surfaced via last_error in the row.
-		s.logger.Warn("schedules: manual run failed", "id", id, "err", runErr)
+		s.logger.Warn("schedules: run failed", "id", sch.ID, "manual", manual, "err", runErr)
 	}
-	http.Redirect(w, r, "/schedules", http.StatusSeeOther)
 }
 
 // handleSchedulesDelete removes a schedule.
@@ -188,7 +212,7 @@ func (s *Server) handleSchedulesDelete(w http.ResponseWriter, r *http.Request) {
 // the layout's browser-notification JS to poll for new toasts.
 func (s *Server) handleEventsSince(w http.ResponseWriter, r *http.Request) {
 	if s.notifs == nil {
-		writeJSON(w, eventsResponse{Events: []eventJSON{}, Now: time.Now().UnixMilli()})
+		writeJSON(w, eventsResponse{Events: []eventJSON{}, LastID: 0})
 		return
 	}
 	after := parseInt64(r.URL.Query().Get("after"), 0)
@@ -213,12 +237,23 @@ func (s *Server) handleEventsSince(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: e.CreatedAt.UnixMilli(),
 		})
 	}
-	writeJSON(w, eventsResponse{Events: out, Now: time.Now().UnixMilli()})
+	// LastID is the highest event id at query time. The frontend uses it
+	// to seed its cursor on the first empty poll so a freshly-opened page
+	// doesn't toast the entire history. Returning a millisecond timestamp
+	// here (as a previous revision did) is a bug — the cursor compares to
+	// event ids, which are small auto-increment integers.
+	var lastID int64
+	if len(evs) > 0 {
+		lastID = evs[len(evs)-1].ID
+	} else if m, mErr := s.notifs.MaxID(ctx); mErr == nil {
+		lastID = m
+	}
+	writeJSON(w, eventsResponse{Events: out, LastID: lastID})
 }
 
 type eventsResponse struct {
 	Events []eventJSON `json:"events"`
-	Now    int64       `json:"now"`
+	LastID int64       `json:"last_id"`
 }
 
 type eventJSON struct {

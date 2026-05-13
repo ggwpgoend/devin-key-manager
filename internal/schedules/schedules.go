@@ -251,6 +251,36 @@ func (r *Repo) MarkRan(ctx context.Context, id string, out RunOutcome) error {
 	return nil
 }
 
+// Claim atomically reserves a schedule for firing by advancing its
+// next_run_at to a tentative future value. Returns true only if this call
+// won the race against a concurrent run-now or another tick — callers that
+// see false should skip firing the schedule. The eventual MarkRan call
+// will overwrite next_run_at with the canonical value.
+//
+// We deliberately tolerate the case where MarkRan never runs (process
+// crashes mid-fire): the tentative next_run_at puts the schedule out of
+// the DueBefore window, so we don't replay-storm the same task.
+func (r *Repo) Claim(ctx context.Context, id string, now time.Time) (bool, error) {
+	s, err := r.Get(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	tentative := ComputeNextRun(s.Kind, s.IntervalSeconds, s.DailyHour, s.DailyMinute, now, now)
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE schedules
+		    SET next_run_at = ?
+		  WHERE id = ?
+		    AND enabled = 1
+		    AND next_run_at <= ?`,
+		tentative, id, now,
+	)
+	if err != nil {
+		return false, fmt.Errorf("schedules: claim: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	return rows == 1, nil
+}
+
 // ComputeNextRun returns the next time a schedule of (kind, params) should
 // fire relative to "now" and an optional anchor (last_run_at). For interval
 // schedules, ComputeNextRun returns now+IntervalSeconds when no anchor is

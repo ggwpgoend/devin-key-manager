@@ -7,6 +7,7 @@ package scheduler
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/ggwpgoend/devin-key-manager/internal/notifications"
@@ -64,21 +65,50 @@ func (s *Scheduler) loop(ctx context.Context) {
 	}
 }
 
-// ProcessDue runs one pass of the scheduler synchronously. Exposed for tests
-// and for manual triggering from the UI.
+// ProcessDue runs one pass of the scheduler. Each due schedule is first
+// atomically claimed via the repo so a concurrent manual run-now (or the
+// next tick before the previous one finished) can't double-fire it, then
+// dispatched to its own goroutine — multiple due schedules don't queue
+// behind each other waiting for slow Devin calls.
+//
+// We block until all goroutines spawned in this pass have finished (using
+// a WaitGroup) so tests can deterministically observe their effects, and
+// so the next tick's claim sees the updated state.
 func (s *Scheduler) ProcessDue(ctx context.Context, now time.Time) {
 	due, err := s.repo.DueBefore(ctx, now)
 	if err != nil {
 		s.logger.Warn("scheduler: due lookup failed", "err", err)
 		return
 	}
+	var wg sync.WaitGroup
 	for _, sch := range due {
-		s.fire(ctx, sch)
+		// Claim under the loop's ctx — if claim fails we silently skip.
+		claimed, cErr := s.repo.Claim(ctx, sch.ID, now)
+		if cErr != nil {
+			s.logger.Warn("scheduler: claim failed", "schedule", sch.ID, "err", cErr)
+			continue
+		}
+		if !claimed {
+			// Someone else (run-now or a concurrent tick) got there first.
+			continue
+		}
+		wg.Add(1)
+		go func(sch schedules.Schedule) {
+			defer wg.Done()
+			s.fire(ctx, sch)
+		}(sch)
 	}
+	wg.Wait()
 }
 
-func (s *Scheduler) fire(ctx context.Context, sch schedules.Schedule) {
-	sid, err := s.runner.StartScheduledTask(ctx, sch)
+func (s *Scheduler) fire(_ context.Context, sch schedules.Schedule) {
+	// Use a detached context for the Devin call so a cancellation from
+	// the loop's ctx (process shutdown) doesn't cut off an in-flight
+	// session creation halfway through. We keep an overall deadline so
+	// truly hung calls don't pin goroutines forever.
+	callCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	sid, err := s.runner.StartScheduledTask(callCtx, sch)
 	outcome := schedules.RunOutcome{SessionID: sid}
 	if err != nil {
 		outcome.Error = err.Error()
@@ -86,7 +116,10 @@ func (s *Scheduler) fire(ctx context.Context, sch schedules.Schedule) {
 	} else {
 		s.logger.Info("scheduler: fired", "schedule", sch.ID, "session", sid)
 	}
-	if mErr := s.repo.MarkRan(ctx, sch.ID, outcome); mErr != nil {
+	// MarkRan + notify run on the detached ctx as well — they must complete
+	// even if the originating tick's ctx has since been cancelled, so the
+	// schedule's last_run_at reflects reality on the next startup.
+	if mErr := s.repo.MarkRan(callCtx, sch.ID, outcome); mErr != nil {
 		s.logger.Warn("scheduler: mark ran failed", "schedule", sch.ID, "err", mErr)
 	}
 	if s.notifs == nil {
@@ -100,7 +133,7 @@ func (s *Scheduler) fire(ctx context.Context, sch schedules.Schedule) {
 	if err != nil {
 		body = err.Error()
 	}
-	if _, nErr := s.notifs.Append(ctx, notifications.AppendInput{
+	if _, nErr := s.notifs.Append(callCtx, notifications.AppendInput{
 		Kind:             notifications.KindScheduleFired,
 		Title:            "Scheduled: " + sch.Title,
 		Body:             body,

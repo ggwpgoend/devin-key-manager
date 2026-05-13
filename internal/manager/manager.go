@@ -446,8 +446,11 @@ func (m *Manager) notifyNewDevinMessages(ctx context.Context, sess sessions.Sess
 			break
 		}
 	}
-	if len(lastBody) > 200 {
-		lastBody = lastBody[:200] + "…"
+	if r := []rune(lastBody); len(r) > 200 {
+		// Slice by runes, not bytes — otherwise multi-byte characters
+		// (Cyrillic, CJK, emoji) get cut mid-sequence and end up as
+		// mojibake in the browser-side Notification body.
+		lastBody = string(r[:200]) + "…"
 	}
 	title := "Devin replied"
 	if delta := nowCount - prevCount; delta > 1 {
