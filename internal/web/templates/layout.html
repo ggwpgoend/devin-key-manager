@@ -1,0 +1,35 @@
+{{define "layout"}}<!doctype html>
+<html lang="en" class="h-full bg-slate-950 text-slate-100">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{.Title}} · devin-key-manager</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .pill { @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium; }
+  </style>
+</head>
+<body class="min-h-full">
+  <header class="border-b border-slate-800 bg-slate-900/60 backdrop-blur">
+    <div class="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+      <div class="flex items-center gap-3">
+        <span class="text-lg font-semibold tracking-tight">devin-key-manager</span>
+        <span class="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">{{.Version}}</span>
+      </div>
+      <nav class="flex items-center gap-4 text-sm">
+        <a href="/keys" class="{{if eq .Active "keys"}}text-white{{else}}text-slate-400 hover:text-white{{end}}">Keys</a>
+        <span class="text-slate-700">Tasks (PR-2)</span>
+        <span class="text-slate-700">Sessions (PR-2)</span>
+      </nav>
+    </div>
+  </header>
+  <main class="mx-auto max-w-6xl px-6 py-8">
+    {{template "content" .}}
+  </main>
+  <footer class="mx-auto max-w-6xl px-6 pb-8 pt-12 text-xs text-slate-500">
+    Local dashboard — listening on this machine only. Master key file: <code class="rounded bg-slate-900 px-1.5 py-0.5">{{.MasterKeyPath}}</code>
+  </footer>
+</body>
+</html>{{end}}

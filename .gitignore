@@ -1,0 +1,28 @@
+# Build artifacts
+/dist/
+/build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Local data
+/devinmgr.db
+/devinmgr.db-journal
+/devinmgr.db-wal
+/devinmgr.db-shm
+/.master_key
+/artifacts/
+*.log
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Go
+/vendor/
+*.test
+*.out
+coverage.txt

@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: gofmt
+        run: |
+          set -e
+          out=$(gofmt -s -l .)
+          if [ -n "$out" ]; then
+            echo "::error::gofmt issues:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go test
+        run: go test -race -count=1 ./...
+
+      - name: go build (linux)
+        run: go build -o /tmp/devinmgr ./cmd/devinmgr
+
+      - name: go build (windows/amd64)
+        run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/devinmgr.exe ./cmd/devinmgr

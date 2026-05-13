@@ -1,0 +1,99 @@
+{{define "content"}}
+<div class="mb-8 flex items-center justify-between">
+  <div>
+    <h1 class="text-2xl font-semibold">API keys</h1>
+    <p class="mt-1 text-sm text-slate-400">{{len .Keys}} key{{if ne (len .Keys) 1}}s{{end}} in pool. Trial keys are used first.</p>
+  </div>
+  <button
+    class="rounded-md bg-indigo-500 px-4 py-2 text-sm font-medium text-white shadow hover:bg-indigo-400"
+    hx-get="/keys/new"
+    hx-target="#dialog"
+    hx-swap="innerHTML">
+    + Add key
+  </button>
+</div>
+
+{{if .Flash}}
+<div class="mb-6 rounded-md border border-emerald-700/40 bg-emerald-900/30 px-4 py-2 text-sm text-emerald-200">
+  {{.Flash}}
+</div>
+{{end}}
+
+<div id="keys-table">
+  {{template "keys_table" .}}
+</div>
+
+<div id="dialog"></div>
+{{end}}
+
+{{define "keys_table"}}
+{{if eq (len .Keys) 0}}
+<div class="rounded-lg border border-dashed border-slate-800 bg-slate-900/40 px-6 py-16 text-center">
+  <p class="text-slate-300">No keys yet. Click <span class="font-medium text-indigo-300">Add key</span> to register your first Devin API key.</p>
+</div>
+{{else}}
+<div class="overflow-hidden rounded-lg border border-slate-800">
+  <table class="min-w-full divide-y divide-slate-800 text-sm">
+    <thead class="bg-slate-900/60 text-left text-xs uppercase tracking-wider text-slate-400">
+      <tr>
+        <th class="px-4 py-3">Label</th>
+        <th class="px-4 py-3">Plan</th>
+        <th class="px-4 py-3">State</th>
+        <th class="px-4 py-3">Fingerprint</th>
+        <th class="px-4 py-3">Last used</th>
+        <th class="px-4 py-3 text-right">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800 bg-slate-900/30">
+      {{range .Keys}}
+      <tr>
+        <td class="px-4 py-3 font-medium text-slate-100">{{.Label}}</td>
+        <td class="px-4 py-3">
+          {{if eq (printf "%s" .Plan) "trial"}}
+            <span class="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300">trial</span>
+          {{else if eq (printf "%s" .Plan) "free"}}
+            <span class="inline-flex items-center rounded-full bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-300">free</span>
+          {{else}}
+            <span class="inline-flex items-center rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-300">paid</span>
+          {{end}}
+        </td>
+        <td class="px-4 py-3">
+          {{if eq (printf "%s" .State) "active"}}
+            <span class="inline-flex items-center rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-300">active</span>
+          {{else if eq (printf "%s" .State) "cooldown_daily"}}
+            <span class="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300">cooldown 24h</span>
+          {{else if eq (printf "%s" .State) "cooldown_weekly"}}
+            <span class="inline-flex items-center rounded-full bg-rose-500/15 px-2 py-0.5 text-xs font-medium text-rose-300">weekly cooldown</span>
+          {{else}}
+            <span class="inline-flex items-center rounded-full bg-slate-500/15 px-2 py-0.5 text-xs font-medium text-slate-300">dead</span>
+          {{end}}
+        </td>
+        <td class="px-4 py-3 font-mono text-xs text-slate-400">{{.MaskedFingerprint}}</td>
+        <td class="px-4 py-3 text-slate-400">
+          {{if .LastUsedAt}}{{.LastUsedAt.Format "2006-01-02 15:04"}}{{else}}—{{end}}
+        </td>
+        <td class="px-4 py-3 text-right">
+          <button class="text-xs text-slate-300 hover:text-white"
+                  hx-get="/keys/{{.ID}}/edit"
+                  hx-target="#dialog"
+                  hx-swap="innerHTML">edit</button>
+          <button class="ml-3 text-xs text-rose-300 hover:text-rose-200"
+                  hx-delete="/keys/{{.ID}}"
+                  hx-confirm="Delete key '{{.Label}}'? This cannot be undone."
+                  hx-target="#keys-table"
+                  hx-swap="outerHTML">delete</button>
+        </td>
+      </tr>
+      {{if .Notes}}
+      <tr>
+        <td colspan="6" class="border-t border-slate-800/60 bg-slate-900/20 px-4 py-2 text-xs text-slate-400">
+          {{.Notes}}
+        </td>
+      </tr>
+      {{end}}
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}
