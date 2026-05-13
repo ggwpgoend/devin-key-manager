@@ -96,6 +96,19 @@ func (r *Repo) Create(ctx context.Context, in CreateInput) (Handoff, error) {
 	}, nil
 }
 
+// Delete removes a handoff row by id. Used by rotate() to clean up an
+// orphaned handoff when the rotation failed after the markdown row was
+// already inserted (e.g. the picked replacement key also returned a
+// network error). Without this, the user would see handoff rows that
+// never linked to a new session, which is confusing in the task UI.
+func (r *Repo) Delete(ctx context.Context, handoffID string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM handoffs WHERE id = ?`, handoffID)
+	if err != nil {
+		return fmt.Errorf("handoffs: delete: %w", err)
+	}
+	return nil
+}
+
 // LinkTo stamps the new session id on an existing handoff row, completing the
 // chain from the dying session to its replacement.
 func (r *Repo) LinkTo(ctx context.Context, handoffID, toSessionID string) error {

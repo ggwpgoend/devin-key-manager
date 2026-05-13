@@ -144,14 +144,33 @@ func (m *Manager) rotate(ctx context.Context, dying sessions.Session, reason Rot
 	if err != nil {
 		return RotateResult{}, fmt.Errorf("manager: create handoff: %w", err)
 	}
+	// Track whether we successfully linked the handoff to a new session.
+	// Anything that returns before linkedOK = true triggers the deferred
+	// cleanup so we don't leave orphaned rows in the handoffs table.
+	// (#13: previously, if Pick / Reveal / CreateSession failed after the
+	// handoff was inserted, the row stayed forever showing 'handed off to —'
+	// in the task detail view.)
+	linkedOK := false
+	defer func() {
+		if linkedOK {
+			return
+		}
+		// Use a detached context so cleanup still runs when the caller's
+		// context is the one that timed out / was cancelled.
+		cleanCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if derr := m.handoffs.Delete(cleanCtx, handoff.ID); derr != nil {
+			m.logger.Warn("rotate: cleanup orphan handoff failed",
+				"handoff_id", handoff.ID, "err", derr)
+		}
+	}()
 
 	// Pick the next active key, excluding the one we just cooldowned (Pick
 	// already does this because the key is no longer in state=active).
 	nextKey, err := m.keys.Pick(ctx)
 	if err != nil {
 		// No replacement key — pause the task and surface the error to the
-		// caller. The handoff row is preserved so a manual rotate later can
-		// reuse the markdown.
+		// caller. The orphan-handoff cleanup runs via defer above.
 		if errors.Is(err, keys.ErrNoActiveKey) {
 			_ = m.tasks.SetStatus(ctx, task.ID, tasks.StatusPaused)
 		}
@@ -199,6 +218,10 @@ func (m *Manager) rotate(ctx context.Context, dying sessions.Session, reason Rot
 
 	if err := m.handoffs.LinkTo(ctx, handoff.ID, newLocal.ID); err != nil {
 		m.logger.Warn("rotate: link handoff", "err", err)
+	} else {
+		// Successful link means the handoff row is no longer orphan-bait;
+		// disable the deferred cleanup.
+		linkedOK = true
 	}
 	if err := m.sessions.SetStatus(ctx, dying.ID, sessions.StatusHandoffDone,
 		fmt.Sprintf("%s; rotated to %s", endReason, newLocal.ID)); err != nil {

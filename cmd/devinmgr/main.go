@@ -11,7 +11,9 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ggwpgoend/devin-key-manager/internal/artifacts"
 	"github.com/ggwpgoend/devin-key-manager/internal/config"
@@ -25,6 +27,13 @@ import (
 	"github.com/ggwpgoend/devin-key-manager/internal/version"
 	"github.com/ggwpgoend/devin-key-manager/internal/web"
 )
+
+// shutdownGrace is how long the main loop waits for background goroutines
+// (poller, checker, reactivator) to drain their current iteration after
+// SIGTERM/SIGINT before forcing the process to exit. Five seconds is more
+// than enough for an in-flight Devin poll to complete on a healthy
+// network and not so long that a hung HTTP call wedges the whole binary.
+const shutdownGrace = 5 * time.Second
 
 func main() {
 	if err := run(); err != nil {
@@ -74,22 +83,36 @@ func run() error {
 	downloader := artifacts.NewDownloader(artifactsRepo, cfg.ArtifactsDir, mgr.BearerForSession, logger)
 	mgr.SetDownloader(downloader)
 
+	// Background loops are tracked in a WaitGroup so shutdown waits for
+	// each loop to observe the cancelled context and exit its current
+	// iteration before main() returns. Without this, SIGTERM would tear
+	// down the process while a Devin poll or a SQLite write might still
+	// be mid-statement, occasionally corrupting the WAL or leaving an
+	// in-flight HTTP request half-written.
+	var bgWG sync.WaitGroup
+
 	poller := manager.NewPoller(mgr, sessionsRepo, logger, manager.PollerOptions{})
+	bgWG.Add(1)
 	go func() {
+		defer bgWG.Done()
 		if err := poller.Run(ctx); err != nil {
 			logger.Warn("poller exited", "err", err)
 		}
 	}()
 
 	checker := manager.NewChecker(mgr, logger, manager.CheckerOptions{RunOnStart: true})
+	bgWG.Add(1)
 	go func() {
+		defer bgWG.Done()
 		if err := checker.Run(ctx); err != nil {
 			logger.Warn("checker exited", "err", err)
 		}
 	}()
 
 	reactivator := manager.NewReactivator(mgr, logger, manager.ReactivatorOptions{RunOnStart: true})
+	bgWG.Add(1)
 	go func() {
+		defer bgWG.Done()
 		if err := reactivator.Run(ctx); err != nil {
 			logger.Warn("reactivator exited", "err", err)
 		}
@@ -107,8 +130,22 @@ func run() error {
 		return fmt.Errorf("init server: %w", err)
 	}
 
-	if err := srv.Run(ctx, cfg.Addr); err != nil && !errors.Is(err, context.Canceled) {
-		return fmt.Errorf("http: %w", err)
+	srvErr := srv.Run(ctx, cfg.Addr)
+
+	// After the HTTP server exits the context is cancelled (either by
+	// signal or because of an HTTP error). Wait for the background loops
+	// up to shutdownGrace before returning.
+	done := make(chan struct{})
+	go func() { bgWG.Wait(); close(done) }()
+	select {
+	case <-done:
+		logger.Info("shutdown: background loops stopped cleanly")
+	case <-time.After(shutdownGrace):
+		logger.Warn("shutdown: timed out waiting for background loops", "grace", shutdownGrace)
+	}
+
+	if srvErr != nil && !errors.Is(srvErr, context.Canceled) {
+		return fmt.Errorf("http: %w", srvErr)
 	}
 	logger.Info("shutdown complete")
 	return nil
