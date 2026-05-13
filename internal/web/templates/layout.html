@@ -6,9 +6,67 @@
   <title>{{.Title}} · devin-key-manager</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <!-- Markdown rendering + syntax highlighting for chat bubbles (PR-5). -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js" defer></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css">
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js" defer></script>
   <style>
     body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
     .pill { @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium; }
+    /* Markdown body styling — keeps Devin's prose readable without overpowering
+       the chat bubble layout. */
+    .md-body { line-height: 1.55; }
+    .md-body p { margin: 0 0 0.6em; }
+    .md-body p:last-child { margin-bottom: 0; }
+    .md-body strong { color: #f1f5f9; font-weight: 600; }
+    .md-body em { color: #cbd5e1; font-style: italic; }
+    .md-body ul, .md-body ol { margin: 0.3em 0 0.6em 1.2em; padding: 0; }
+    .md-body ul { list-style: disc; }
+    .md-body ol { list-style: decimal; }
+    .md-body li { margin: 0.15em 0; }
+    .md-body h1, .md-body h2, .md-body h3, .md-body h4 {
+      font-weight: 600; color: #f1f5f9; margin: 0.6em 0 0.3em;
+    }
+    .md-body h1 { font-size: 1.15em; }
+    .md-body h2 { font-size: 1.08em; }
+    .md-body h3, .md-body h4 { font-size: 1em; }
+    .md-body a { color: #818cf8; text-decoration: underline; word-break: break-word; }
+    .md-body a:hover { color: #a5b4fc; }
+    .md-body code:not(pre code) {
+      background: rgba(15, 23, 42, 0.7); color: #fbbf24;
+      padding: 1px 6px; border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.88em;
+    }
+    .md-body pre {
+      background: #0f172a; border: 1px solid #1e293b; border-radius: 8px;
+      padding: 10px 12px; margin: 0.5em 0; overflow-x: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.85em; position: relative;
+    }
+    .md-body pre code { background: transparent; padding: 0; color: #e2e8f0; }
+    .md-body blockquote {
+      border-left: 3px solid #475569; padding-left: 0.8em;
+      color: #cbd5e1; margin: 0.5em 0;
+    }
+    .md-body table {
+      border-collapse: collapse; margin: 0.5em 0; font-size: 0.88em;
+    }
+    .md-body th, .md-body td {
+      border: 1px solid #334155; padding: 4px 8px;
+    }
+    .md-body th { background: #1e293b; }
+    /* Copy-to-clipboard button on every code block. */
+    .md-copy {
+      position: absolute; top: 4px; right: 4px;
+      background: rgba(15, 23, 42, 0.85); color: #cbd5e1;
+      border: 1px solid #334155; border-radius: 4px;
+      padding: 2px 8px; font-size: 11px; cursor: pointer;
+      opacity: 0; transition: opacity 0.12s;
+    }
+    .md-body pre:hover .md-copy { opacity: 1; }
+    .md-copy:hover { background: #1e293b; color: #f1f5f9; }
+    .md-copy--ok { color: #34d399 !important; }
   </style>
 </head>
 <body class="min-h-full">
@@ -28,6 +86,53 @@
   <main class="mx-auto max-w-6xl px-6 py-8">
     {{template "content" .}}
   </main>
+  <script>
+    // Markdown renderer for chat bubbles. Runs once on DOM ready and again
+    // after every HTMX swap so polled message updates also get processed.
+    (function () {
+      function renderAll(root) {
+        if (typeof marked === "undefined") return;
+        marked.use({
+          gfm: true,
+          breaks: true,
+          mangle: false,
+          headerIds: false,
+        });
+        (root || document).querySelectorAll("[data-md]:not([data-md-done])").forEach(function (el) {
+          var src = el.getAttribute("data-md-src") || el.textContent;
+          el.classList.add("md-body");
+          el.innerHTML = marked.parse(src);
+          el.setAttribute("data-md-done", "1");
+          el.querySelectorAll("pre code").forEach(function (code) {
+            if (typeof hljs !== "undefined") {
+              try { hljs.highlightElement(code); } catch (e) {}
+            }
+            var pre = code.parentElement;
+            if (pre && !pre.querySelector(".md-copy")) {
+              var btn = document.createElement("button");
+              btn.type = "button";
+              btn.className = "md-copy";
+              btn.textContent = "Copy";
+              btn.addEventListener("click", function () {
+                navigator.clipboard.writeText(code.innerText || code.textContent || "").then(function () {
+                  btn.textContent = "Copied";
+                  btn.classList.add("md-copy--ok");
+                  setTimeout(function () {
+                    btn.textContent = "Copy";
+                    btn.classList.remove("md-copy--ok");
+                  }, 1200);
+                });
+              });
+              pre.appendChild(btn);
+            }
+          });
+        });
+      }
+      window.renderMarkdown = renderAll;
+      document.addEventListener("DOMContentLoaded", function () { renderAll(document); });
+      document.addEventListener("htmx:afterSwap", function (evt) { renderAll(evt.target); });
+    })();
+  </script>
   <footer class="mx-auto max-w-6xl px-6 pb-8 pt-12 text-xs text-slate-500">
     Local dashboard — listening on this machine only. Master key file: <code class="rounded bg-slate-900 px-1.5 py-0.5">{{.MasterKeyPath}}</code>
   </footer>

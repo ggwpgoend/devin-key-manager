@@ -88,6 +88,27 @@
   </div>
   {{end}}
 
+  <!-- Private notes (never sent to Devin) -->
+  <details class="mt-3 rounded-md border border-slate-800 bg-slate-900/40"{{if .Session.Notes}} open{{end}}>
+    <summary class="flex cursor-pointer items-center justify-between px-3 py-2 text-xs text-slate-300">
+      <span class="flex items-center gap-2">
+        <span class="font-semibold">Notes</span>
+        <span class="text-slate-500">private to you, never sent to Devin</span>
+      </span>
+      <span id="notes-status" class="text-slate-500">{{if .Session.Notes}}{{else}}empty{{end}}</span>
+    </summary>
+    <form class="px-3 pb-3"
+          hx-post="/sessions/{{.Session.ID}}/notes"
+          hx-trigger="keyup changed delay:600ms from:textarea[name=notes], change from:textarea[name=notes]"
+          hx-target="#notes-status"
+          hx-swap="outerHTML">
+      <textarea name="notes" rows="3"
+        placeholder="Why did I open this session? What did I try? Links, TODOs, anything that helps future-you."
+        class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+        onfocus="document.getElementById('notes-status').textContent='editing\u2026';">{{.Session.Notes}}</textarea>
+    </form>
+  </details>
+
   <!-- Messages (HTMX-polled) -->
   <div id="chat-stream"
        hx-get="/sessions/{{.Session.ID}}/messages"
@@ -148,7 +169,7 @@
         <div class="flex h-8 w-8 flex-none items-center justify-center rounded-full bg-slate-800 text-xs font-semibold text-indigo-300">D</div>
         <div class="max-w-[80%] rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm text-slate-100 shadow">
           <div class="text-xs font-semibold text-indigo-300">Devin</div>
-          <div class="mt-1 whitespace-pre-wrap">{{$m.Content}}</div>
+          <div class="mt-1" data-md>{{$m.Content}}</div>
           {{template "chat_attachments" .}}
           <div class="mt-1 text-[10px] text-slate-500">{{$m.Timestamp.Format "15:04:05"}}</div>
         </div>

@@ -174,6 +174,7 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/{id}/rotate", s.handleSessionRotate)
 		r.Post("/{id}/snap", s.handleSessionSnap)
 		r.Get("/{id}/files", s.handleSessionFiles)
+		r.Post("/{id}/notes", s.handleSessionNotes)
 	})
 
 	r.Route("/artifacts", func(r chi.Router) {
@@ -546,6 +547,30 @@ func (s *Server) handleSessionSnap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.redirect(w, r, "/sessions/"+id+"?flash="+urlEncode("Asked Devin for a screenshot. It will appear in chat shortly."))
+}
+
+// handleSessionNotes saves the user's private notes for a session. The text
+// is written as-is to the sessions.notes column and never forwarded to Devin.
+// On success we return a tiny status fragment that the notes panel swaps in
+// place of its "saving…" indicator.
+func (s *Server) handleSessionNotes(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	notes := strings.TrimRight(r.FormValue("notes"), " \t\n\r")
+	if err := s.sessions.SetNotes(r.Context(), id, notes); err != nil {
+		if errors.Is(err, sessions.ErrNotFound) {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		s.serverError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<span id="notes-status" class="text-emerald-400">saved %s</span>`,
+		time.Now().Format("15:04:05"))
 }
 
 // handleSessionFiles renders the per-session artifact gallery.
