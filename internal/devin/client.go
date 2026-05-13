@@ -9,12 +9,19 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
 
 // DefaultBaseURL is the production Devin Cloud REST API root.
 const DefaultBaseURL = "https://api.devin.ai/v1"
+
+// envBaseURL is the name of the environment variable that, when set,
+// overrides DefaultBaseURL for every client constructed via NewClient. It
+// exists so the manager can be pointed at a mock Devin API during local
+// testing without recompiling. Production users never need to set it.
+const envBaseURL = "DEVIN_API_BASE_URL"
 
 // Client talks to the Devin Cloud REST API on behalf of a single API key.
 // Construct one per managed key; do not share across keys because each
@@ -61,12 +68,19 @@ func WithUserAgent(ua string) Option {
 
 // NewClient returns a Client primed with apiKey. The default HTTP timeout is
 // 60 seconds — generous, because session creation can be slow.
+//
+// The base URL is resolved in this order: explicit WithBaseURL option →
+// DEVIN_API_BASE_URL env var (if set) → DefaultBaseURL. The env var hook
+// lets the manager binary be pointed at a mock server for local testing.
 func NewClient(apiKey string, opts ...Option) *Client {
 	c := &Client{
 		apiKey:     apiKey,
 		baseURL:    DefaultBaseURL,
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 		userAgent:  "devin-key-manager/dev",
+	}
+	if v := strings.TrimSpace(os.Getenv(envBaseURL)); v != "" {
+		c.baseURL = strings.TrimRight(v, "/")
 	}
 	for _, o := range opts {
 		o(c)
