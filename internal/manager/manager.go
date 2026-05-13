@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ggwpgoend/devin-key-manager/internal/artifacts"
 	"github.com/ggwpgoend/devin-key-manager/internal/devin"
 	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
@@ -35,13 +36,15 @@ func DefaultClientFactory(apiKey string) *devin.Client {
 
 // Manager wires the application-level workflows.
 type Manager struct {
-	logger   *slog.Logger
-	keys     *keys.Repo
-	tasks    *tasks.Repo
-	sessions *sessions.Repo
-	handoffs *handoffs.Repo
-	clientOf ClientFactory
-	now      func() time.Time
+	logger     *slog.Logger
+	keys       *keys.Repo
+	tasks      *tasks.Repo
+	sessions   *sessions.Repo
+	handoffs   *handoffs.Repo
+	artifacts  *artifacts.Repo
+	downloader *artifacts.Downloader
+	clientOf   ClientFactory
+	now        func() time.Time
 }
 
 // Options bundles optional Manager configuration.
@@ -49,6 +52,8 @@ type Options struct {
 	Logger        *slog.Logger
 	ClientFactory ClientFactory
 	Now           func() time.Time
+	Artifacts     *artifacts.Repo
+	Downloader    *artifacts.Downloader
 }
 
 // New constructs a Manager. Pass a non-nil handoffs.Repo so the quota
@@ -68,13 +73,15 @@ func New(k *keys.Repo, t *tasks.Repo, s *sessions.Repo, h *handoffs.Repo, opts O
 		now = time.Now
 	}
 	return &Manager{
-		logger:   logger,
-		keys:     k,
-		tasks:    t,
-		sessions: s,
-		handoffs: h,
-		clientOf: factory,
-		now:      now,
+		logger:     logger,
+		keys:       k,
+		tasks:      t,
+		sessions:   s,
+		handoffs:   h,
+		artifacts:  opts.Artifacts,
+		downloader: opts.Downloader,
+		clientOf:   factory,
+		now:        now,
 	}
 }
 
@@ -276,7 +283,43 @@ func (m *Manager) SyncSession(ctx context.Context, sessionID string) error {
 	}
 	_ = m.sessions.MarkPolled(ctx, sessionID)
 	_ = m.tasks.Touch(ctx, sess.TaskID)
+
+	// Scan assistant messages for attachment URLs and enqueue downloads.
+	m.extractAndEnqueueArtifacts(ctx, sess, remote.Messages)
+
 	return nil
+}
+
+// extractAndEnqueueArtifacts scans remote messages for HTTP(S) URLs and
+// creates pending artifact rows for any that haven't been seen before. The
+// downloader picks them up asynchronously.
+func (m *Manager) extractAndEnqueueArtifacts(ctx context.Context, sess sessions.Session, msgs []devin.Message) {
+	if m.artifacts == nil || m.downloader == nil {
+		return
+	}
+	for _, msg := range msgs {
+		if msg.Type != "devin_message" && msg.Type != "agent_message" && msg.Type != "assistant_message" {
+			continue
+		}
+		urls := artifacts.ExtractURLs(msg.Message)
+		for _, eu := range urls {
+			a, err := m.artifacts.Create(ctx, artifacts.CreateInput{
+				TaskID:    sess.TaskID,
+				SessionID: sess.ID,
+				Filename:  eu.Filename,
+				RemoteURL: eu.URL,
+				Source:    artifacts.SourceDevin,
+			})
+			if errors.Is(err, artifacts.ErrAlreadyExists) {
+				continue
+			}
+			if err != nil {
+				m.logger.Warn("artifacts: create row", "url", eu.URL, "err", err)
+				continue
+			}
+			m.downloader.Enqueue(ctx, a)
+		}
+	}
 }
 
 // roleFromDevinType maps a Devin message-type string to a local Role.
@@ -308,6 +351,39 @@ func statusFromDevin(s string) sessions.Status {
 	default:
 		return ""
 	}
+}
+
+// ArtifactsRepo exposes the artifacts repository so the web layer can query
+// artifacts for rendering. Returns nil if artifacts support was not wired in.
+func (m *Manager) ArtifactsRepo() *artifacts.Repo { return m.artifacts }
+
+// SetDownloader injects the artifacts downloader after construction. This is
+// necessary because the downloader needs a BearerProvider that calls back into
+// the manager, which creates a chicken-and-egg ordering issue at startup.
+func (m *Manager) SetDownloader(d *artifacts.Downloader) { m.downloader = d }
+
+// BearerForSession returns the decrypted API key associated with a session's
+// key. Used as an artifacts.BearerProvider so the downloader can authenticate
+// when fetching remote attachment URLs.
+func (m *Manager) BearerForSession(ctx context.Context, sessionID string) (string, error) {
+	sess, err := m.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("manager: get session: %w", err)
+	}
+	plaintext, err := m.keys.Reveal(ctx, sess.KeyID)
+	if err != nil {
+		return "", fmt.Errorf("manager: reveal key: %w", err)
+	}
+	return plaintext, nil
+}
+
+// SnapDesktop sends a screenshot-request prompt to a running session's Devin
+// instance. The reply (which should include an image attachment) will be picked
+// up on the next SyncSession cycle and auto-downloaded by the artifact
+// downloader. Returns the session ID the message was sent to.
+func (m *Manager) SnapDesktop(ctx context.Context, sessionID string) error {
+	const prompt = "Please take a screenshot of your current desktop and include it as an image attachment in your reply. Do not include any other commentary."
+	return m.SendFollowUp(ctx, sessionID, prompt)
 }
 
 // deriveTitle returns a short title from the first line of the prompt.

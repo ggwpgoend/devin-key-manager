@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/ggwpgoend/devin-key-manager/internal/artifacts"
 	"github.com/ggwpgoend/devin-key-manager/internal/config"
 	"github.com/ggwpgoend/devin-key-manager/internal/crypto"
 	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
@@ -61,7 +62,17 @@ func run() error {
 	tasksRepo := tasks.NewRepo(db)
 	sessionsRepo := sessions.NewRepo(db)
 	handoffsRepo := handoffs.NewRepo(db)
-	mgr := manager.New(keysRepo, tasksRepo, sessionsRepo, handoffsRepo, manager.Options{Logger: logger})
+	artifactsRepo := artifacts.NewRepo(db)
+
+	// The downloader needs a BearerProvider. We create the manager first
+	// with a nil downloader, then wire the downloader after the manager
+	// exists so we can call mgr.BearerForSession.
+	mgr := manager.New(keysRepo, tasksRepo, sessionsRepo, handoffsRepo, manager.Options{
+		Logger:    logger,
+		Artifacts: artifactsRepo,
+	})
+	downloader := artifacts.NewDownloader(artifactsRepo, cfg.ArtifactsDir, mgr.BearerForSession, logger)
+	mgr.SetDownloader(downloader)
 
 	poller := manager.NewPoller(mgr, sessionsRepo, logger, manager.PollerOptions{})
 	go func() {
@@ -85,11 +96,12 @@ func run() error {
 	}()
 
 	srv, err := web.NewServer(logger, web.Deps{
-		Keys:     keysRepo,
-		Tasks:    tasksRepo,
-		Sessions: sessionsRepo,
-		Handoffs: handoffsRepo,
-		Manager:  mgr,
+		Keys:      keysRepo,
+		Tasks:     tasksRepo,
+		Sessions:  sessionsRepo,
+		Handoffs:  handoffsRepo,
+		Artifacts: artifactsRepo,
+		Manager:   mgr,
 	}, cfg.MasterKeyPath)
 	if err != nil {
 		return fmt.Errorf("init server: %w", err)

@@ -1,0 +1,86 @@
+{{define "content"}}
+<div class="space-y-6">
+  <div class="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
+    <div class="min-w-0">
+      <div class="flex items-center gap-2 text-xs uppercase tracking-wider text-slate-500">
+        <a href="/sessions/{{.Session.ID}}" class="hover:text-slate-300">← back to chat</a>
+        <span class="text-slate-700">·</span>
+        <a href="/tasks/{{.Task.ID}}" class="hover:text-slate-300">{{.Task.Title}}</a>
+      </div>
+      <h1 class="mt-1 truncate text-xl font-semibold">Files</h1>
+      <p class="mt-1 text-xs text-slate-400">
+        Everything Devin attached or linked in this session. Images are previewed inline; click
+        any tile to open or download the underlying file.
+      </p>
+    </div>
+    <div class="flex items-center gap-2">
+      <a href="/sessions/{{.Session.ID}}"
+         class="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
+        Open chat
+      </a>
+    </div>
+  </div>
+
+  {{if .Flash}}
+  <div class="rounded-md border border-emerald-700/40 bg-emerald-900/30 px-4 py-2 text-sm text-emerald-200">
+    {{.Flash}}
+  </div>
+  {{end}}
+
+  {{if not .Artifacts}}
+  <div class="rounded-md border border-dashed border-slate-700 bg-slate-900/30 px-6 py-12 text-center text-sm text-slate-400">
+    No files yet. When Devin shares a screenshot, binary, or any other URL in the chat, it will appear here.
+  </div>
+  {{else}}
+  <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    {{range .Artifacts}}
+    <div class="flex flex-col overflow-hidden rounded-lg border border-slate-800 bg-slate-900/40">
+      <div class="flex h-44 items-center justify-center border-b border-slate-800 bg-slate-950">
+        {{if and (eq (printf "%s" .Status) "ready") .IsImage}}
+        <a href="/artifacts/{{.ID}}/raw" target="_blank" class="block h-full w-full">
+          <img src="/artifacts/{{.ID}}/raw" alt="{{.Filename}}"
+               class="h-full w-full object-contain" />
+        </a>
+        {{else if eq (printf "%s" .Status) "ready"}}
+        <div class="text-center text-4xl text-slate-600">{{/* generic file icon */}}📄</div>
+        {{else if eq (printf "%s" .Status) "failed"}}
+        <div class="px-3 text-center text-xs text-rose-300">⚠ download failed</div>
+        {{else}}
+        <div class="text-center text-xs text-slate-500">downloading…</div>
+        {{end}}
+      </div>
+      <div class="flex flex-1 flex-col gap-2 p-3 text-xs">
+        <div class="truncate font-mono text-sm text-slate-200" title="{{.Filename}}">{{.Filename}}</div>
+        <div class="flex flex-wrap items-center gap-2 text-slate-500">
+          <span class="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] uppercase tracking-wide
+                       {{if eq (printf "%s" .Status) "ready"}}text-emerald-300
+                       {{else if eq (printf "%s" .Status) "failed"}}text-rose-300
+                       {{else}}text-slate-400{{end}}">
+            {{.Status}}
+          </span>
+          {{if .ContentType}}<span class="truncate">{{.ContentType}}</span>{{end}}
+          {{if gt .SizeBytes 0}}<span class="text-slate-600">·</span><span>{{.SizeBytes}} B</span>{{end}}
+        </div>
+        {{if .Error}}<div class="text-[11px] text-rose-300">{{.Error}}</div>{{end}}
+        <div class="mt-auto flex items-center gap-2 pt-1">
+          {{if eq (printf "%s" .Status) "ready"}}
+          <a href="/artifacts/{{.ID}}/raw" target="_blank"
+             class="rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-800">
+            View
+          </a>
+          <a href="/artifacts/{{.ID}}/download"
+             class="rounded-md bg-indigo-500/90 px-2 py-1 text-[11px] font-medium text-white hover:bg-indigo-400">
+            Download
+          </a>
+          {{end}}
+          <a href="{{.RemoteURL}}" target="_blank"
+             class="ml-auto truncate text-[10px] text-slate-500 hover:text-slate-300"
+             title="{{.RemoteURL}}">source ↗</a>
+        </div>
+      </div>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
