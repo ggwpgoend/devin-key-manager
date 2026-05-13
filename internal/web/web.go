@@ -34,7 +34,7 @@ import (
 //go:embed templates/*.html
 var templatesFS embed.FS
 
-//go:embed static/vendor/*
+//go:embed static/vendor/* static/storm.css
 var staticFS embed.FS
 
 // staticVersion is appended as a ?v= query param to vendored asset URLs so
@@ -64,6 +64,7 @@ type Server struct {
 // that multiple pages can each define a {{define "content"}} block without
 // clashing in a single shared parse tree.
 var pageContentFiles = map[string]string{
+	"dashboard":       "templates/dashboard.html",
 	"keys_index":      "templates/keys_index.html",
 	"tasks_index":     "templates/tasks_index.html",
 	"task_detail":     "templates/task_detail.html",
@@ -158,9 +159,8 @@ func (s *Server) Handler() http.Handler {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Compress(5))
 
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/tasks", http.StatusFound)
-	})
+	// PR-11: dashboard is the new root. Bento layout with live KPIs.
+	r.Get("/", s.handleDashboard)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -231,6 +231,9 @@ func (s *Server) Handler() http.Handler {
 	// ?v=<version> bust token wired in layout.html. Anything that wants to
 	// override one of these can drop a file at the same path in /static/.
 	r.Get("/static/vendor/*", s.handleStaticVendor)
+	// PR-11: storm.css palette/components served the same way; also a
+	// general fallthrough for any future /static/<name>.css we add.
+	r.Get("/static/{name}", s.handleStaticTop)
 
 	return r
 }
@@ -244,23 +247,34 @@ func (s *Server) handleStaticVendor(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	path := "static/vendor/" + tail
-	data, err := staticFS.ReadFile(path)
-	if err != nil {
+	serveStatic(w, "static/vendor/"+tail, tail)
+}
+
+func (s *Server) handleStaticTop(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if name == "" || strings.Contains(name, "..") || strings.Contains(name, "/") {
 		http.NotFound(w, r)
 		return
 	}
+	serveStatic(w, "static/"+name, name)
+}
+
+func serveStatic(w http.ResponseWriter, fsPath, name string) {
+	data, err := staticFS.ReadFile(fsPath)
+	if err != nil {
+		http.NotFound(w, nil)
+		return
+	}
 	switch {
-	case strings.HasSuffix(tail, ".js"):
+	case strings.HasSuffix(name, ".js"):
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-	case strings.HasSuffix(tail, ".css"):
+	case strings.HasSuffix(name, ".css"):
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	case strings.HasSuffix(tail, ".woff2"):
+	case strings.HasSuffix(name, ".woff2"):
 		w.Header().Set("Content-Type", "font/woff2")
-	case strings.HasSuffix(tail, ".svg"):
+	case strings.HasSuffix(name, ".svg"):
 		w.Header().Set("Content-Type", "image/svg+xml")
 	}
-	// Vendor assets are content-addressed via ?v= so we can cache for a year.
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	_, _ = w.Write(data)
 }
@@ -948,6 +962,34 @@ type pageData struct {
 	// server, which can be UTC in headless setups.
 	ServerTime string
 	ServerTZ   string
+
+	// Dashboard (PR-11).
+	Stats       dashStats
+	RecentTasks []tasks.Task
+	KeyRollup   []keyRollup
+}
+
+// dashStats is the bento KPI bundle for the dashboard.
+type dashStats struct {
+	KeysActive      int
+	KeysTotal       int
+	KeysCooldown    int
+	KeysDead        int
+	TasksLast24h    int
+	TasksRunning    int
+	TasksDone       int
+	SessionsLast24h int
+	SessionsOpen    int
+	SessionsClosed  int
+	RequestsTotal   int64
+}
+
+// keyRollup is one row in the dashboard's key-pool tile (per plan).
+type keyRollup struct {
+	Plan      string
+	Count     int
+	Requests  int64
+	PillClass string
 }
 
 // scheduleFormData carries the pre-filled values for the schedules creation
