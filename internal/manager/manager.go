@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ggwpgoend/devin-key-manager/internal/devin"
+	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
 	"github.com/ggwpgoend/devin-key-manager/internal/tasks"
@@ -38,6 +39,7 @@ type Manager struct {
 	keys     *keys.Repo
 	tasks    *tasks.Repo
 	sessions *sessions.Repo
+	handoffs *handoffs.Repo
 	clientOf ClientFactory
 	now      func() time.Time
 }
@@ -49,8 +51,10 @@ type Options struct {
 	Now           func() time.Time
 }
 
-// New constructs a Manager.
-func New(k *keys.Repo, t *tasks.Repo, s *sessions.Repo, opts Options) *Manager {
+// New constructs a Manager. Pass a non-nil handoffs.Repo so the quota
+// rotation flow can persist handoff markdown; production wires this through
+// from main.go.
+func New(k *keys.Repo, t *tasks.Repo, s *sessions.Repo, h *handoffs.Repo, opts Options) *Manager {
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -68,6 +72,7 @@ func New(k *keys.Repo, t *tasks.Repo, s *sessions.Repo, opts Options) *Manager {
 		keys:     k,
 		tasks:    t,
 		sessions: s,
+		handoffs: h,
 		clientOf: factory,
 		now:      now,
 	}
@@ -141,6 +146,21 @@ func (m *Manager) StartTask(ctx context.Context, in StartTaskInput) (StartTaskRe
 		status := sessions.StatusFailed
 		if errors.Is(err, devin.ErrQuotaExhausted) {
 			status = sessions.StatusQuotaExhausted
+			// First-try quota: cooldown the offending key and rotate to a
+			// fresh one. Because no conversation has happened yet, the
+			// "handoff" is just the original prompt — the user shouldn't
+			// have to retry by hand.
+			_ = m.sessions.SetStatus(ctx, sess.ID, status, reason)
+			_ = m.tasks.SetStatus(ctx, task.ID, tasks.StatusRunning)
+			rotated, rerr := m.rotateOnQuota(ctx, sess, "create_session quota_exhausted")
+			if rerr == nil {
+				return StartTaskResult{Task: rotated.Task, Session: rotated.ToSession, Key: rotated.NewKey}, nil
+			}
+			if !errors.Is(rerr, keys.ErrNoActiveKey) {
+				m.logger.Warn("start task: rotate after first-try quota failed", "err", rerr)
+			}
+			_ = m.tasks.SetStatus(ctx, task.ID, tasks.StatusPaused)
+			return StartTaskResult{}, err
 		}
 		_ = m.sessions.SetStatus(ctx, sess.ID, status, reason)
 		_ = m.tasks.SetStatus(ctx, task.ID, tasks.StatusFailed)
@@ -192,6 +212,17 @@ func (m *Manager) SendFollowUp(ctx context.Context, sessionID, text string) erro
 	}
 	client := m.clientOf(plaintext)
 	if err := client.SendMessage(ctx, sess.DevinSessionID, text); err != nil {
+		if errors.Is(err, devin.ErrQuotaExhausted) {
+			// Cache the pending user message locally so the handoff prompt
+			// includes it — Devin needs to see what the user just tried to
+			// send.
+			if _, aerr := m.sessions.AppendMessage(ctx, sessionID, sessions.RoleUser, text, m.now().UTC()); aerr != nil {
+				m.logger.Warn("manager: cache pending message before rotate", "err", aerr)
+			}
+			if _, rerr := m.rotateOnQuota(ctx, sess, "send_message quota_exhausted"); rerr != nil {
+				m.logger.Warn("manager: rotate after send_message quota failed", "session_id", sessionID, "err", rerr)
+			}
+		}
 		return err
 	}
 	if _, err := m.sessions.AppendMessage(ctx, sessionID, sessions.RoleUser, text, m.now().UTC()); err != nil {
@@ -222,7 +253,9 @@ func (m *Manager) SyncSession(ctx context.Context, sessionID string) error {
 	remote, err := client.GetSession(ctx, sess.DevinSessionID)
 	if err != nil {
 		if errors.Is(err, devin.ErrQuotaExhausted) {
-			_ = m.sessions.SetStatus(ctx, sessionID, sessions.StatusQuotaExhausted, "poll: quota exhausted")
+			if _, rerr := m.rotateOnQuota(ctx, sess, "poll: quota exhausted"); rerr != nil {
+				m.logger.Warn("manager: rotate after poll quota failed", "session_id", sessionID, "err", rerr)
+			}
 		}
 		return err
 	}

@@ -70,15 +70,23 @@
           {{end}}
         </td>
         <td class="px-4 py-3">
-          {{if eq (printf "%s" .State) "active"}}
-            <span class="inline-flex items-center rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-300">active</span>
-          {{else if eq (printf "%s" .State) "cooldown_daily"}}
-            <span class="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300">cooldown 24h</span>
-          {{else if eq (printf "%s" .State) "cooldown_weekly"}}
-            <span class="inline-flex items-center rounded-full bg-rose-500/15 px-2 py-0.5 text-xs font-medium text-rose-300">weekly cooldown</span>
-          {{else}}
-            <span class="inline-flex items-center rounded-full bg-slate-500/15 px-2 py-0.5 text-xs font-medium text-slate-300">dead</span>
-          {{end}}
+          <div class="flex items-center gap-2">
+            {{if eq (printf "%s" .State) "active"}}
+              <span class="inline-flex items-center rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-300">active</span>
+            {{else if eq (printf "%s" .State) "cooldown_daily"}}
+              <span class="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300" title="24-hour cooldown after quota exhaustion">cooldown 24h</span>
+            {{else if eq (printf "%s" .State) "cooldown_weekly"}}
+              <span class="inline-flex items-center rounded-full bg-rose-500/15 px-2 py-0.5 text-xs font-medium text-rose-300" title="Weekly quota exhausted">weekly cooldown</span>
+            {{else}}
+              <span class="inline-flex items-center rounded-full bg-slate-500/15 px-2 py-0.5 text-xs font-medium text-slate-300">dead</span>
+            {{end}}
+            {{if .CooldownUntil}}
+              <span class="text-[10px] text-slate-500" title="Reactivates {{.CooldownUntil.Format "2006-01-02 15:04"}} UTC">until {{.CooldownUntil.Format "01-02 15:04"}}</span>
+            {{end}}
+            {{if gt .DailyCyclesUsedThisWeek 0}}
+              <span class="text-[10px] text-slate-500" title="Daily cycles used this week">{{.DailyCyclesUsedThisWeek}}/2</span>
+            {{end}}
+          </div>
         </td>
         <td class="px-4 py-3 font-mono text-xs text-slate-400">{{.MaskedFingerprint}}</td>
         <td class="px-4 py-3 text-slate-400">

@@ -16,6 +16,7 @@ import (
 
 	"github.com/ggwpgoend/devin-key-manager/internal/crypto"
 	"github.com/ggwpgoend/devin-key-manager/internal/devin"
+	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/manager"
 	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
@@ -27,6 +28,7 @@ type fixtures struct {
 	keys     *keys.Repo
 	tasks    *tasks.Repo
 	sessions *sessions.Repo
+	handoffs *handoffs.Repo
 	mgr      *manager.Manager
 	server   *httptest.Server
 	calls    *atomic.Int32
@@ -54,11 +56,12 @@ func newFixtures(t *testing.T) *fixtures {
 	keysRepo := keys.NewRepo(db, cipher)
 	tasksRepo := tasks.NewRepo(db)
 	sessionsRepo := sessions.NewRepo(db)
+	handoffsRepo := handoffs.NewRepo(db)
 
 	factory := func(apiKey string) *devin.Client {
 		return devin.NewClient(apiKey, devin.WithBaseURL(srv.URL))
 	}
-	mgr := manager.New(keysRepo, tasksRepo, sessionsRepo, manager.Options{
+	mgr := manager.New(keysRepo, tasksRepo, sessionsRepo, handoffsRepo, manager.Options{
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 		ClientFactory: factory,
 	})
@@ -67,6 +70,7 @@ func newFixtures(t *testing.T) *fixtures {
 		keys:     keysRepo,
 		tasks:    tasksRepo,
 		sessions: sessionsRepo,
+		handoffs: handoffsRepo,
 		mgr:      mgr,
 		server:   srv,
 		calls:    calls,
@@ -140,7 +144,7 @@ func TestStartTaskHappyPath(t *testing.T) {
 
 func TestStartTaskQuotaExhausted(t *testing.T) {
 	f := newFixtures(t)
-	_, err := f.keys.Create(context.Background(), keys.CreateInput{
+	created, err := f.keys.Create(context.Background(), keys.CreateInput{
 		Label: "trial", Plan: keys.PlanTrial, APIKey: "sk-empty",
 	})
 	if err != nil {
@@ -153,10 +157,84 @@ func TestStartTaskQuotaExhausted(t *testing.T) {
 	if !errors.Is(err, devin.ErrQuotaExhausted) {
 		t.Fatalf("want ErrQuotaExhausted, got %v", err)
 	}
-	// Session should be recorded as quota_exhausted; task as failed.
+	// The first-try quota path cooldowns the offending key, attempts a
+	// rotate, and because no replacement key is available the task is
+	// parked in 'paused' so the user can resume after the cooldown lifts.
 	all, _ := f.tasks.List(context.Background())
-	if len(all) != 1 || all[0].Status != tasks.StatusFailed {
+	if len(all) != 1 || all[0].Status != tasks.StatusPaused {
 		t.Errorf("task status: %+v", all)
+	}
+	gotKey, err := f.keys.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("get key: %v", err)
+	}
+	if gotKey.State != keys.StateCooldownDaily {
+		t.Errorf("key state: want cooldown_daily, got %s", gotKey.State)
+	}
+	if gotKey.CooldownUntil == nil {
+		t.Errorf("expected cooldown_until set")
+	}
+}
+
+func TestStartTaskQuotaRotatesToFreshKey(t *testing.T) {
+	f := newFixtures(t)
+	bad, err := f.keys.Create(context.Background(), keys.CreateInput{
+		Label: "trial-bad", Plan: keys.PlanTrial, APIKey: "sk-bad",
+	})
+	if err != nil {
+		t.Fatalf("create bad: %v", err)
+	}
+	good, err := f.keys.Create(context.Background(), keys.CreateInput{
+		Label: "trial-good", Plan: keys.PlanTrial, APIKey: "sk-good",
+	})
+	if err != nil {
+		t.Fatalf("create good: %v", err)
+	}
+
+	// First key (bad) is picked first by virtue of older created_at; the
+	// mock returns 402 for it, then 200 for the second attempt under the
+	// good key. We distinguish keys by the Authorization header.
+	f.handler.HandleFunc("/sessions", func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if strings.HasSuffix(auth, "sk-bad") {
+			w.WriteHeader(http.StatusPaymentRequired)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"session_id":"devin-good"}`)
+	})
+
+	result, err := f.mgr.StartTask(context.Background(), manager.StartTaskInput{Prompt: "build me a GUI"})
+	if err != nil {
+		t.Fatalf("start task: %v", err)
+	}
+	if result.Key.ID != good.ID {
+		t.Fatalf("expected rotation to good key, got %s", result.Key.ID)
+	}
+	if result.Session.DevinSessionID != "devin-good" {
+		t.Errorf("devin session id on result: %q", result.Session.DevinSessionID)
+	}
+
+	badState, _ := f.keys.Get(context.Background(), bad.ID)
+	if badState.State != keys.StateCooldownDaily {
+		t.Errorf("bad key state: %s", badState.State)
+	}
+	if badState.CooldownUntil == nil {
+		t.Errorf("bad key cooldown_until should be set")
+	}
+
+	chain, err := f.handoffs.ListByTask(context.Background(), result.Task.ID)
+	if err != nil {
+		t.Fatalf("list handoffs: %v", err)
+	}
+	if len(chain) != 1 {
+		t.Fatalf("expected 1 handoff row, got %d", len(chain))
+	}
+	if chain[0].ToSessionID != result.Session.ID {
+		t.Errorf("handoff.to_session_id: got %q want %q", chain[0].ToSessionID, result.Session.ID)
+	}
+	if !strings.Contains(chain[0].Markdown, "build me a GUI") {
+		t.Errorf("handoff markdown missing original prompt:\n%s", chain[0].Markdown)
 	}
 }
 

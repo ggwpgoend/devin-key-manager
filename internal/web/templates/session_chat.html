@@ -18,6 +18,7 @@
                           {{else if eq .StatusLabel "completed"}}bg-sky-900/40 text-sky-200
                           {{else if eq .StatusLabel "failed"}}bg-rose-900/40 text-rose-200
                           {{else if eq .StatusLabel "quota_exhausted"}}bg-amber-900/40 text-amber-200
+                          {{else if eq .StatusLabel "handoff_done"}}bg-indigo-900/40 text-indigo-200
                           {{else}}bg-slate-800 text-slate-300{{end}}">{{.StatusLabel}}</span>
         {{if .Session.DevinSessionID}}
         <span class="text-slate-600">·</span>
@@ -25,13 +26,54 @@
         {{end}}
       </div>
     </div>
-    <button
-      class="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
-      hx-post="/sessions/{{.Session.ID}}/sync"
-      hx-target="#chat-stream" hx-swap="outerHTML">
-      Refresh now
-    </button>
+    <div class="flex items-center gap-2">
+      <button
+        class="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+        hx-post="/sessions/{{.Session.ID}}/sync"
+        hx-target="#chat-stream" hx-swap="outerHTML">
+        Refresh now
+      </button>
+      {{if or (eq .StatusLabel "running") (eq .StatusLabel "blocked") (eq .StatusLabel "quota_exhausted") (eq .StatusLabel "handoff_pending")}}
+      <button
+        class="rounded-md border border-amber-700/60 bg-amber-900/40 px-3 py-1.5 text-xs text-amber-100 hover:bg-amber-900/60"
+        hx-post="/sessions/{{.Session.ID}}/rotate"
+        hx-confirm="Rotate to a fresh key? Devin will get a handoff prompt summarising this session."
+        title="Mint a new session on the next active key, seeded with this session's history.">
+        Rotate now
+      </button>
+      {{end}}
+    </div>
   </div>
+
+  {{if .Flash}}
+  <div class="mt-3 rounded-md border border-emerald-700/40 bg-emerald-900/30 px-4 py-2 text-sm text-emerald-200">
+    {{.Flash}}
+  </div>
+  {{end}}
+
+  {{if .InboundHandoff.ID}}
+  <div class="mt-3 rounded-md border border-indigo-700/40 bg-indigo-900/30 px-4 py-2 text-xs text-indigo-100">
+    <span class="font-semibold">Resumed from previous session.</span>
+    {{if .InboundHandoff.FromSessionID}}
+    <a href="/sessions/{{.InboundHandoff.FromSessionID}}" class="ml-2 underline hover:text-white">View previous chat</a>
+    <span class="text-indigo-300/60">·</span>
+    {{end}}
+    <a href="/handoffs/{{.InboundHandoff.ID}}" target="_blank" class="ml-2 underline hover:text-white">View handoff markdown</a>
+    <span class="ml-2 text-indigo-300/60">handed off {{.InboundHandoff.CreatedAt.Format "2006-01-02 15:04"}}</span>
+  </div>
+  {{end}}
+
+  {{if .OutboundHandoff.ID}}
+  <div class="mt-3 rounded-md border border-amber-700/40 bg-amber-900/30 px-4 py-2 text-xs text-amber-100">
+    <span class="font-semibold">This session was rotated out.</span>
+    {{if .OutboundHandoff.ToSessionID}}
+    <a href="/sessions/{{.OutboundHandoff.ToSessionID}}" class="ml-2 underline hover:text-white">Open continuation</a>
+    <span class="text-amber-300/60">·</span>
+    {{end}}
+    <a href="/handoffs/{{.OutboundHandoff.ID}}" target="_blank" class="ml-2 underline hover:text-white">View handoff markdown</a>
+    <span class="ml-2 text-amber-300/60">handed off {{.OutboundHandoff.CreatedAt.Format "2006-01-02 15:04"}}</span>
+  </div>
+  {{end}}
 
   <!-- Messages (HTMX-polled) -->
   <div id="chat-stream"
