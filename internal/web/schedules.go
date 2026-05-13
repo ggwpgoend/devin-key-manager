@@ -63,6 +63,8 @@ func (s *Server) handleSchedulesCreate(w http.ResponseWriter, r *http.Request) {
 		Prompt:   strings.TrimSpace(r.FormValue("prompt")),
 		PlanHint: strings.TrimSpace(r.FormValue("plan_hint")),
 		Kind:     strings.TrimSpace(r.FormValue("kind")),
+		CronExpr: strings.TrimSpace(r.FormValue("cron_expr")),
+		FireAt:   strings.TrimSpace(r.FormValue("fire_at")),
 	}
 	form.IntervalSeconds = parseInt64(r.FormValue("interval_seconds"), 0)
 	form.DailyHour = int(parseInt64(r.FormValue("daily_hour"), 0))
@@ -76,7 +78,21 @@ func (s *Server) handleSchedulesCreate(w http.ResponseWriter, r *http.Request) {
 		IntervalSeconds: form.IntervalSeconds,
 		DailyHour:       form.DailyHour,
 		DailyMinute:     form.DailyMinute,
+		CronExpr:        form.CronExpr,
 		Enabled:         true,
+	}
+	// One-off schedules need a fire-at timestamp parsed from <input
+	// type="datetime-local"> which submits as 2025-05-13T15:39 in local
+	// time. We treat it as the server's local zone for round-trip
+	// readability; the schedule itself stores UTC.
+	if in.Kind == schedules.KindOneoff && form.FireAt != "" {
+		layouts := []string{"2006-01-02T15:04", time.RFC3339, "2006-01-02 15:04"}
+		for _, layout := range layouts {
+			if ts, parseErr := time.ParseInLocation(layout, form.FireAt, time.Local); parseErr == nil {
+				in.FireAt = ts
+				break
+			}
+		}
 	}
 	if _, err := s.schedules.Create(r.Context(), in); err != nil {
 		list, _ := s.schedules.List(r.Context())

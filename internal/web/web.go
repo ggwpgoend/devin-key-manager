@@ -302,6 +302,10 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/api/keys", s.handleAPIKeysCreate)
 	r.Options("/api/keys", s.handleAPIKeysCreate)
 
+	// PR-17: artifact retention + pinning.
+	r.Post("/api/artifacts/{id}/pin", s.handleArtifactPin)
+	r.Post("/api/artifacts/retention/sweep", s.handleArtifactRetentionSweep)
+
 	r.Route("/pipeline-runs", func(r chi.Router) {
 		r.Get("/{run_id}", s.handlePipelineRunDetail)
 		r.Post("/{run_id}/rollback", s.handlePipelineRunRollback)
@@ -592,6 +596,10 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 	in := manager.StartTaskInput{
 		Title:  r.PostFormValue("title"),
 		Prompt: r.PostFormValue("prompt"),
+		// PR-17 / roadmap A9: sticky session-to-key. Caller can pass a
+		// preferred key ID; if the key is no longer active the picker
+		// transparently falls back to round-robin.
+		PreferKeyID: strings.TrimSpace(r.PostFormValue("prefer_key_id")),
 	}
 	result, err := s.manager.StartTask(r.Context(), in)
 	if err != nil {
@@ -816,14 +824,15 @@ func (s *Server) handleSessionFiles(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.renderPage(w, r, "session_files", pageData{
-		Title:         "Files \u00b7 " + task.Title,
-		Active:        "tasks",
-		Version:       version.Version,
-		MasterKeyPath: s.masterKeyPath,
-		Task:          task,
-		Session:       sess,
-		Artifacts:     list,
-		Flash:         r.URL.Query().Get("flash"),
+		Title:          "Files \u00b7 " + task.Title,
+		Active:         "tasks",
+		Version:        version.Version,
+		MasterKeyPath:  s.masterKeyPath,
+		Task:           task,
+		Session:        sess,
+		Artifacts:      list,
+		ArtifactGroups: groupArtifacts(list),
+		Flash:          r.URL.Query().Get("flash"),
 	})
 }
 
@@ -1074,6 +1083,10 @@ type pageData struct {
 	Messages        []sessions.Message
 	MessageViews    []messageView
 	Artifacts       []artifacts.Artifact
+	// PR-17 / roadmap D35: visual grouping of artifacts in the gallery
+	// view. The handler pre-computes these so the template stays free
+	// of grouping logic.
+	ArtifactGroups  []artifactGroup
 	StatusLabel     string
 	Composer        composerData
 	InboundHandoff  handoffs.Handoff
@@ -1139,6 +1152,69 @@ type scheduleFormData struct {
 	IntervalSeconds int64
 	DailyHour       int
 	DailyMinute     int
+	// PR-17 / roadmap E41 + E42: cron expression and one-off ISO-8601
+	// timestamp inputs. Empty for legacy interval/daily forms.
+	CronExpr string
+	FireAt   string
+}
+
+// artifactGroup buckets a slice of artifacts under a single human-
+// readable label. Used by the gallery view to render artifacts grouped
+// by broad content-type family (PR-17 / roadmap D35).
+type artifactGroup struct {
+	Label     string
+	Artifacts []artifacts.Artifact
+}
+
+// groupArtifacts splits the artifacts list into named buckets keyed by
+// content-type family. Pinned artifacts always come first so the user's
+// favourites stay visible.
+func groupArtifacts(list []artifacts.Artifact) []artifactGroup {
+	if len(list) == 0 {
+		return nil
+	}
+	families := map[string][]artifacts.Artifact{
+		"Pinned":    nil,
+		"Images":    nil,
+		"Text":      nil,
+		"Archives":  nil,
+		"Documents": nil,
+		"Other":     nil,
+	}
+	order := []string{"Pinned", "Images", "Text", "Archives", "Documents", "Other"}
+	for _, a := range list {
+		// Pinned wins regardless of content-type. The artifact still
+		// appears in the gallery once.
+		// NOTE: Artifact's struct doesn't have a Pinned field exposed
+		// at the time of writing — when the schema migration lands the
+		// scan() in artifacts.go will populate it. For now we treat all
+		// artifacts as unpinned which is the safe default; the bucket
+		// is reserved for future use.
+		ct := strings.ToLower(a.ContentType)
+		switch {
+		case strings.HasPrefix(ct, "image/"):
+			families["Images"] = append(families["Images"], a)
+		case strings.HasPrefix(ct, "text/"),
+			strings.Contains(ct, "json"), strings.Contains(ct, "javascript"),
+			strings.Contains(ct, "xml"):
+			families["Text"] = append(families["Text"], a)
+		case strings.Contains(ct, "zip"), strings.Contains(ct, "tar"),
+			strings.Contains(ct, "gzip"), strings.Contains(ct, "rar"):
+			families["Archives"] = append(families["Archives"], a)
+		case strings.Contains(ct, "pdf"), strings.Contains(ct, "msword"),
+			strings.Contains(ct, "officedocument"), strings.Contains(ct, "spreadsheet"):
+			families["Documents"] = append(families["Documents"], a)
+		default:
+			families["Other"] = append(families["Other"], a)
+		}
+	}
+	var out []artifactGroup
+	for _, k := range order {
+		if len(families[k]) > 0 {
+			out = append(out, artifactGroup{Label: k, Artifacts: families[k]})
+		}
+	}
+	return out
 }
 
 // messageView pairs a session message with any artifacts referenced from its

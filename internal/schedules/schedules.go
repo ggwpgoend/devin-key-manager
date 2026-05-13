@@ -30,12 +30,14 @@ type Kind string
 const (
 	KindInterval Kind = "interval"
 	KindDaily    Kind = "daily"
+	KindCron     Kind = "cron"
+	KindOneoff   Kind = "oneoff"
 )
 
 // Valid reports whether k is a recognised schedule kind.
 func (k Kind) Valid() bool {
 	switch k {
-	case KindInterval, KindDaily:
+	case KindInterval, KindDaily, KindCron, KindOneoff:
 		return true
 	default:
 		return false
@@ -52,6 +54,9 @@ type Schedule struct {
 	IntervalSeconds int64
 	DailyHour       int
 	DailyMinute     int
+	// CronExpr is the standard 5-field cron expression for KindCron.
+	// Empty for other kinds. Parsed/validated via ParseCron.
+	CronExpr        string
 	Enabled         bool
 	NextRunAt       time.Time
 	LastRunAt       sql.NullTime
@@ -90,6 +95,11 @@ type CreateInput struct {
 	IntervalSeconds int64
 	DailyHour       int
 	DailyMinute     int
+	// CronExpr is required when Kind == KindCron.
+	CronExpr        string
+	// FireAt is required when Kind == KindOneoff: the absolute UTC
+	// timestamp at which the schedule should fire exactly once.
+	FireAt          time.Time
 	Enabled         bool
 }
 
@@ -116,6 +126,14 @@ func (in CreateInput) Validate() error {
 		if in.DailyMinute < 0 || in.DailyMinute > 59 {
 			return errors.New("minute must be 0–59")
 		}
+	case KindCron:
+		if _, err := ParseCron(in.CronExpr); err != nil {
+			return err
+		}
+	case KindOneoff:
+		if in.FireAt.IsZero() {
+			return errors.New("one-off schedules need a fire-at timestamp")
+		}
 	}
 	switch strings.TrimSpace(in.PlanHint) {
 	case "", "trial", "free", "paid":
@@ -133,15 +151,15 @@ func (r *Repo) Create(ctx context.Context, in CreateInput) (Schedule, error) {
 	}
 	id := uuid.NewString()
 	now := r.now().UTC()
-	next := ComputeNextRun(in.Kind, in.IntervalSeconds, in.DailyHour, in.DailyMinute, now, time.Time{})
+	next := ComputeNextRunFull(in.Kind, in.IntervalSeconds, in.DailyHour, in.DailyMinute, in.CronExpr, in.FireAt, now, time.Time{})
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO schedules
 		   (id, title, prompt, plan_hint, kind, interval_seconds,
-		    daily_hour, daily_minute, enabled, next_run_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    daily_hour, daily_minute, enabled, next_run_at, created_at, cron_expr)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, strings.TrimSpace(in.Title), strings.TrimSpace(in.Prompt),
 		strings.TrimSpace(in.PlanHint), string(in.Kind), in.IntervalSeconds,
-		in.DailyHour, in.DailyMinute, boolToInt(in.Enabled), next, now,
+		in.DailyHour, in.DailyMinute, boolToInt(in.Enabled), next, now, strings.TrimSpace(in.CronExpr),
 	)
 	if err != nil {
 		return Schedule{}, fmt.Errorf("schedules: insert: %w", err)
@@ -238,10 +256,17 @@ func (r *Repo) MarkRan(ctx context.Context, id string, out RunOutcome) error {
 		return err
 	}
 	now := r.now().UTC()
-	next := ComputeNextRun(s.Kind, s.IntervalSeconds, s.DailyHour, s.DailyMinute, now, now)
+	next := ComputeNextRunFull(s.Kind, s.IntervalSeconds, s.DailyHour, s.DailyMinute, s.CronExpr, s.NextRunAt, now, now)
+	// One-off schedules disable themselves once fired so the scheduler
+	// never picks them up again. The next_run_at is also pushed far
+	// into the future as belt-and-suspenders.
+	enabledUpdate := ""
+	if s.Kind == KindOneoff {
+		enabledUpdate = ", enabled = 0"
+	}
 	_, err = r.db.ExecContext(ctx,
 		`UPDATE schedules
-		    SET last_run_at = ?, last_session_id = ?, last_error = ?, next_run_at = ?
+		    SET last_run_at = ?, last_session_id = ?, last_error = ?, next_run_at = ?`+enabledUpdate+`
 		  WHERE id = ?`,
 		now, out.SessionID, out.Error, next, id,
 	)
@@ -265,7 +290,7 @@ func (r *Repo) Claim(ctx context.Context, id string, now time.Time) (bool, error
 	if err != nil {
 		return false, err
 	}
-	tentative := ComputeNextRun(s.Kind, s.IntervalSeconds, s.DailyHour, s.DailyMinute, now, now)
+	tentative := ComputeNextRunFull(s.Kind, s.IntervalSeconds, s.DailyHour, s.DailyMinute, s.CronExpr, s.NextRunAt, now, now)
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE schedules
 		    SET next_run_at = ?
@@ -281,13 +306,15 @@ func (r *Repo) Claim(ctx context.Context, id string, now time.Time) (bool, error
 	return rows == 1, nil
 }
 
-// ComputeNextRun returns the next time a schedule of (kind, params) should
-// fire relative to "now" and an optional anchor (last_run_at). For interval
-// schedules, ComputeNextRun returns now+IntervalSeconds when no anchor is
-// supplied; otherwise anchor+IntervalSeconds — except when anchor is in the
-// distant past, in which case we snap forward so a long-paused schedule
-// doesn't fire continuously to catch up.
+// ComputeNextRun is the legacy 4-arg helper used before cron/oneoff
+// landed. It defers to ComputeNextRunFull with empty cron/fire-at.
 func ComputeNextRun(kind Kind, intervalSeconds int64, dailyHour, dailyMinute int, now, anchor time.Time) time.Time {
+	return ComputeNextRunFull(kind, intervalSeconds, dailyHour, dailyMinute, "", time.Time{}, now, anchor)
+}
+
+// ComputeNextRunFull is the full-parameter version that handles every
+// supported recurrence kind (PR-17 added KindCron + KindOneoff).
+func ComputeNextRunFull(kind Kind, intervalSeconds int64, dailyHour, dailyMinute int, cronExpr string, fireAt, now, anchor time.Time) time.Time {
 	switch kind {
 	case KindInterval:
 		if intervalSeconds <= 0 {
@@ -298,13 +325,10 @@ func ComputeNextRun(kind Kind, intervalSeconds int64, dailyHour, dailyMinute int
 		}
 		next := anchor.Add(time.Duration(intervalSeconds) * time.Second)
 		if next.Before(now) {
-			// Snap forward to avoid replay storms after long downtime.
 			return now.Add(time.Duration(intervalSeconds) * time.Second)
 		}
 		return next
 	case KindDaily:
-		// Build today's HH:MM in the server's local zone, then jump forward
-		// by 24h if it has already passed.
 		nowLocal := now.Local()
 		todayAt := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(),
 			dailyHour, dailyMinute, 0, 0, nowLocal.Location())
@@ -312,6 +336,27 @@ func ComputeNextRun(kind Kind, intervalSeconds int64, dailyHour, dailyMinute int
 			todayAt = todayAt.Add(24 * time.Hour)
 		}
 		return todayAt.UTC()
+	case KindCron:
+		c, err := ParseCron(cronExpr)
+		if err != nil {
+			// Fall back to firing in an hour rather than 0-value time,
+			// which would cause an immediate-fire loop.
+			return now.Add(time.Hour)
+		}
+		n := c.Next(now)
+		if n.IsZero() {
+			return now.Add(time.Hour)
+		}
+		return n.UTC()
+	case KindOneoff:
+		// If the firing time has already passed (anchor non-zero == ran),
+		// push next_run_at far into the future so the scheduler ignores
+		// it. Combined with the auto-disable in MarkRan this prevents
+		// any further firing.
+		if !anchor.IsZero() {
+			return now.Add(1000 * 24 * time.Hour)
+		}
+		return fireAt.UTC()
 	}
 	return now.Add(time.Hour)
 }
@@ -319,7 +364,8 @@ func ComputeNextRun(kind Kind, intervalSeconds int64, dailyHour, dailyMinute int
 const selectSQL = `SELECT id, title, prompt, plan_hint, kind, interval_seconds,
                           daily_hour, daily_minute, enabled, next_run_at,
                           last_run_at, COALESCE(last_session_id, ''),
-                          last_error, created_at
+                          last_error, created_at,
+                          COALESCE(cron_expr, '')
                    FROM schedules`
 
 type rowScanner interface {
@@ -333,7 +379,7 @@ func scanSchedule(s rowScanner) (Schedule, error) {
 	if err := s.Scan(&sch.ID, &sch.Title, &sch.Prompt, &sch.PlanHint, &kindStr,
 		&sch.IntervalSeconds, &sch.DailyHour, &sch.DailyMinute, &enabled,
 		&sch.NextRunAt, &sch.LastRunAt, &sch.LastSessionID, &sch.LastError,
-		&sch.CreatedAt); err != nil {
+		&sch.CreatedAt, &sch.CronExpr); err != nil {
 		return Schedule{}, err
 	}
 	sch.Kind = Kind(kindStr)
