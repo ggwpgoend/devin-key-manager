@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -82,6 +83,50 @@ type Key struct {
 	LastErrorAt        *time.Time
 	ActivatedAt        *time.Time
 	SessionsCountTotal int64
+	// PR-12 tags. Stored on the key row as a comma-separated list of
+	// lowercased identifiers (no spaces). Use TagsList()/SetTagsList()
+	// to round-trip a []string rather than splitting in callers.
+	Tags string
+}
+
+// TagsList parses the comma-separated Tags column into a slice.
+func (k Key) TagsList() []string {
+	if k.Tags == "" {
+		return nil
+	}
+	parts := strings.Split(k.Tags, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// NormalizeTags canonicalises a list of tag strings before persistence:
+// lowercase, trimmed, deduplicated, alphabetical. Returns the comma-joined
+// form ready to assign to Key.Tags.
+func NormalizeTags(raw []string) string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(raw))
+	for _, r := range raw {
+		r = strings.ToLower(strings.TrimSpace(r))
+		if r == "" {
+			continue
+		}
+		// Reject anything that would corrupt the comma-separated format.
+		r = strings.ReplaceAll(r, ",", "")
+		r = strings.ReplaceAll(r, " ", "-")
+		if _, ok := seen[r]; ok {
+			continue
+		}
+		seen[r] = struct{}{}
+		out = append(out, r)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ",")
 }
 
 // MaskedFingerprint returns a short prefix of the fingerprint suitable for UI
@@ -127,6 +172,10 @@ type CreateInput struct {
 	Plan   Plan
 	APIKey string
 	Notes  string
+	// PR-12: optional tag list for grouping/filtering. Will be normalised
+	// (lowercased, deduped, sorted) before persisting; pass either a slice
+	// or comma-joined input from a form.
+	Tags []string
 }
 
 // Create persists a new key, encrypting the API key value with the configured
@@ -150,10 +199,11 @@ func (r *Repo) Create(ctx context.Context, in CreateInput) (Key, error) {
 	}
 	id := uuid.NewString()
 	now := r.now().UTC()
+	tags := NormalizeTags(in.Tags)
 	_, err = r.db.ExecContext(ctx, `INSERT INTO keys
-        (id, label, plan_type, api_key_encrypted, api_key_fingerprint, state, notes, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
-		id, label, string(in.Plan), encrypted, fp, in.Notes, now, now)
+        (id, label, plan_type, api_key_encrypted, api_key_fingerprint, state, notes, tags, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
+		id, label, string(in.Plan), encrypted, fp, in.Notes, tags, now, now)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Key{}, ErrDuplicateKey
@@ -167,6 +217,7 @@ func (r *Repo) Create(ctx context.Context, in CreateInput) (Key, error) {
 		Fingerprint: fp,
 		State:       StateActive,
 		Notes:       in.Notes,
+		Tags:        tags,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}, nil
@@ -206,6 +257,7 @@ type UpdateInput struct {
 	Label string
 	Plan  Plan
 	Notes string
+	Tags  []string
 }
 
 // Update mutates the editable fields of an existing key. The encrypted API key
@@ -219,9 +271,10 @@ func (r *Repo) Update(ctx context.Context, id string, in UpdateInput) error {
 		return errors.New("keys: label is required")
 	}
 	now := r.now().UTC()
+	tags := NormalizeTags(in.Tags)
 	res, err := r.db.ExecContext(ctx, `UPDATE keys
-        SET label = ?, plan_type = ?, notes = ?, updated_at = ?
-        WHERE id = ?`, label, string(in.Plan), in.Notes, now, id)
+        SET label = ?, plan_type = ?, notes = ?, tags = ?, updated_at = ?
+        WHERE id = ?`, label, string(in.Plan), in.Notes, tags, now, id)
 	if err != nil {
 		return fmt.Errorf("keys: update: %w", err)
 	}
@@ -230,6 +283,43 @@ func (r *Repo) Update(ctx context.Context, id string, in UpdateInput) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// SetTags overwrites the tags on a key with the canonical, sorted form of
+// the input. Returns ErrNotFound if no row matched.
+func (r *Repo) SetTags(ctx context.Context, id string, tags []string) error {
+	now := r.now().UTC()
+	norm := NormalizeTags(tags)
+	res, err := r.db.ExecContext(ctx, `UPDATE keys SET tags = ?, updated_at = ? WHERE id = ?`, norm, now, id)
+	if err != nil {
+		return fmt.Errorf("keys: set tags: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteMany removes every key whose ID is in ids. Returns the number of
+// rows actually deleted (may be less than len(ids) if some IDs were stale).
+// Designed for bulk-delete UX; pair with a dry-run query for preview.
+func (r *Repo) DeleteMany(ctx context.Context, ids []string) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	res, err := r.db.ExecContext(ctx, `DELETE FROM keys WHERE id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return 0, fmt.Errorf("keys: delete many: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // Delete removes a key entirely. Future PRs that link sessions to keys will
@@ -268,7 +358,7 @@ const keyColumns = `
         last_used_at, last_checked_at, last_check_status, last_check_error,
         notes, created_at, updated_at,
         request_count, last_error_message, last_error_at, activated_at,
-        sessions_count_total`
+        sessions_count_total, tags`
 
 // rowScanner is implemented by both *sql.Row and *sql.Rows so scanKey can
 // service both single and multi-row queries.
@@ -294,7 +384,7 @@ func scanKey(s rowScanner) (Key, error) {
 		&lastUsed, &lastChecked, &k.LastCheckStatus, &k.LastCheckError,
 		&k.Notes, &k.CreatedAt, &k.UpdatedAt,
 		&k.RequestCount, &k.LastErrorMessage, &lastErrAt, &activatedAt,
-		&k.SessionsCountTotal,
+		&k.SessionsCountTotal, &k.Tags,
 	); err != nil {
 		return Key{}, fmt.Errorf("keys: scan: %w", err)
 	}

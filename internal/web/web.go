@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/ggwpgoend/devin-key-manager/internal/artifacts"
+	"github.com/ggwpgoend/devin-key-manager/internal/attachments"
 	"github.com/ggwpgoend/devin-key-manager/internal/devin"
 	"github.com/ggwpgoend/devin-key-manager/internal/events"
 	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
@@ -52,6 +53,7 @@ type Server struct {
 	artifacts     *artifacts.Repo
 	schedules     *schedules.Repo
 	notifs        *notifications.Repo
+	attachments   *attachments.Repo
 	bus           *events.Bus
 	manager       *manager.Manager
 	pages         map[string]*template.Template
@@ -92,6 +94,7 @@ type Deps struct {
 	Artifacts     *artifacts.Repo
 	Schedules     *schedules.Repo
 	Notifications *notifications.Repo
+	Attachments   *attachments.Repo
 	Bus           *events.Bus
 	Manager       *manager.Manager
 }
@@ -142,6 +145,7 @@ func NewServer(logger *slog.Logger, deps Deps, masterKeyPath string) (*Server, e
 		artifacts:     deps.Artifacts,
 		schedules:     deps.Schedules,
 		notifs:        deps.Notifications,
+		attachments:   deps.Attachments,
 		bus:           deps.Bus,
 		manager:       deps.Manager,
 		pages:         pages,
@@ -173,10 +177,15 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/new", s.handleKeysNewDialog)
 		r.Get("/dialog/close", s.handleKeysDialogClose)
 		r.Post("/check-all", s.handleKeysCheckAll)
+		// PR-12: bulk delete (A4). POST /keys/bulk-delete with id=... params.
+		// Add ?dry_run=1 to preview affected rows without committing.
+		r.Post("/bulk-delete", s.handleKeysBulkDelete)
 		r.Get("/{id}/edit", s.handleKeysEditDialog)
 		r.Put("/{id}", s.handleKeysUpdate)
 		r.Delete("/{id}", s.handleKeysDelete)
 		r.Post("/{id}/check", s.handleKeysCheck)
+		// PR-12: tags (A3). PUT /keys/{id}/tags with tags=tag1,tag2,...
+		r.Put("/{id}/tags", s.handleKeysSetTags)
 	})
 
 	r.Route("/tasks", func(r chi.Router) {
@@ -196,7 +205,26 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/{id}/snap", s.handleSessionSnap)
 		r.Get("/{id}/files", s.handleSessionFiles)
 		r.Post("/{id}/notes", s.handleSessionNotes)
+		// PR-12: chat search (C29). GET /sessions/{id}/search?q=...
+		r.Get("/{id}/search", s.handleSessionSearch)
+		// PR-12: continue from stopped (C30). POST /sessions/{id}/continue
+		// re-sends "continue" to the Devin session.
+		r.Post("/{id}/continue", s.handleSessionContinue)
+		// PR-12: file upload (C26). multipart POST with a single "file" part.
+		r.Post("/{id}/attachments", s.handleSessionAttach)
+		r.Get("/{id}/attachments", s.handleSessionAttachmentsList)
+		// PR-12: fork/checkpoint (B14). Optional anchor_id=<message-id>.
+		r.Post("/{id}/fork", s.handleSessionFork)
 	})
+
+	// PR-12: pin/unpin messages (C22).
+	r.Route("/messages", func(r chi.Router) {
+		r.Post("/{id}/pin", s.handleMessagePin)
+		r.Post("/{id}/unpin", s.handleMessageUnpin)
+	})
+
+	// PR-12: cross-session search (FTS5). GET /search?q=...
+	r.Get("/search", s.handleGlobalSearch)
 
 	r.Route("/artifacts", func(r chi.Router) {
 		r.Get("/{id}/raw", s.handleArtifactRaw)
@@ -330,6 +358,7 @@ func (s *Server) handleKeysCreate(w http.ResponseWriter, r *http.Request) {
 		Plan:   keys.Plan(strings.TrimSpace(r.PostFormValue("plan"))),
 		APIKey: r.PostFormValue("api_key"),
 		Notes:  r.PostFormValue("notes"),
+		Tags:   splitTagsInput(r.PostFormValue("tags")),
 	}
 	if _, err := s.keys.Create(r.Context(), in); err != nil {
 		if errors.Is(err, keys.ErrDuplicateKey) {
@@ -353,6 +382,7 @@ func (s *Server) handleKeysUpdate(w http.ResponseWriter, r *http.Request) {
 		Label: r.PostFormValue("label"),
 		Plan:  keys.Plan(strings.TrimSpace(r.PostFormValue("plan"))),
 		Notes: r.PostFormValue("notes"),
+		Tags:  splitTagsInput(r.PostFormValue("tags")),
 	}
 	if err := s.keys.Update(r.Context(), id, in); err != nil {
 		if errors.Is(err, keys.ErrNotFound) {
@@ -435,6 +465,24 @@ func summariseCheckResults(results []manager.CheckResult) string {
 
 func urlEncode(s string) string {
 	return url.QueryEscape(s)
+}
+
+// splitTagsInput parses a comma-separated form input ("work, beta, foo")
+// into a clean []string. NormalizeTags() runs on the repo side, so this
+// only handles the raw form decoding.
+func splitTagsInput(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // --- /tasks handlers ---

@@ -60,7 +60,16 @@
     <tbody class="divide-y divide-slate-800 bg-slate-900/30">
       {{range .Keys}}
       <tr>
-        <td class="px-4 py-3 font-medium text-slate-100">{{.Label}}</td>
+        <td class="px-4 py-3 font-medium text-slate-100">
+          {{.Label}}
+          {{with .TagsList}}
+          <div class="mt-1 flex flex-wrap gap-1">
+            {{range .}}
+            <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-[10px] font-medium text-slate-300">{{.}}</span>
+            {{end}}
+          </div>
+          {{end}}
+        </td>
         <td class="px-4 py-3">
           {{if eq (printf "%s" .Plan) "trial"}}
             <span class="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300">trial</span>

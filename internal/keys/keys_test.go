@@ -116,3 +116,80 @@ func TestFingerprintTrimsWhitespace(t *testing.T) {
 		t.Fatalf("fingerprint should ignore surrounding whitespace: %q vs %q", a, b)
 	}
 }
+
+func TestNormalizeTags(t *testing.T) {
+	cases := []struct {
+		in   []string
+		want string
+	}{
+		{nil, ""},
+		{[]string{"Work", "work", "WORK"}, "work"},
+		{[]string{"  beta  ", "alpha", " "}, "alpha,beta"},
+		{[]string{"two words", "comma,bad"}, "commabad,two-words"},
+	}
+	for _, tc := range cases {
+		got := keys.NormalizeTags(tc.in)
+		if got != tc.want {
+			t.Errorf("NormalizeTags(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSetTagsAndRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	repo := newTestRepo(t)
+	k, err := repo.Create(ctx, keys.CreateInput{Label: "tagged", Plan: keys.PlanFree, APIKey: "sk-tag-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetTags(ctx, k.ID, []string{"Work", "trial-batch-2025"}); err != nil {
+		t.Fatalf("set tags: %v", err)
+	}
+	got, err := repo.Get(ctx, k.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tags != "trial-batch-2025,work" {
+		t.Fatalf("tags=%q", got.Tags)
+	}
+	list := got.TagsList()
+	if len(list) != 2 || list[0] != "trial-batch-2025" || list[1] != "work" {
+		t.Fatalf("tags list=%v", list)
+	}
+}
+
+func TestDeleteMany(t *testing.T) {
+	ctx := context.Background()
+	repo := newTestRepo(t)
+	var ids []string
+	for i := 0; i < 4; i++ {
+		k, err := repo.Create(ctx, keys.CreateInput{
+			Label:  "b",
+			Plan:   keys.PlanTrial,
+			APIKey: "sk-bulk-" + string(rune('a'+i)) + "-xxxxxxxxxxxx",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, k.ID)
+	}
+	n, err := repo.DeleteMany(ctx, ids[:3])
+	if err != nil {
+		t.Fatalf("delete many: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("deleted=%d want 3", n)
+	}
+	all, err := repo.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].ID != ids[3] {
+		t.Fatalf("remaining=%+v", all)
+	}
+	// idempotent on stale ids
+	n, err = repo.DeleteMany(ctx, ids[:3])
+	if err != nil || n != 0 {
+		t.Fatalf("stale delete=%d, err=%v", n, err)
+	}
+}
