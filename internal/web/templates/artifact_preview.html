@@ -1,0 +1,76 @@
+{{define "content"}}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css" />
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+<div class="space-y-4">
+  <div class="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
+    <div class="min-w-0">
+      <div class="flex flex-wrap items-center gap-2 text-xs uppercase tracking-wider text-slate-500">
+        {{if .Session.ID}}
+        <a href="/sessions/{{.Session.ID}}/files" class="hover:text-slate-300">← files</a>
+        <span class="text-slate-700">·</span>
+        {{end}}
+        {{if .Task.ID}}
+        <a href="/tasks/{{.Task.ID}}" class="hover:text-slate-300">{{.Task.Title}}</a>
+        <span class="text-slate-700">·</span>
+        {{end}}
+        <span class="truncate text-slate-400">{{.Artifact.ContentType}}</span>
+      </div>
+      <h1 class="mt-1 truncate font-mono text-lg font-semibold text-white" title="{{.Artifact.Filename}}">
+        {{.Artifact.Filename}}
+      </h1>
+      <p class="mt-1 text-xs text-slate-500">
+        {{if gt .Artifact.SizeBytes 0}}{{.Artifact.SizeBytes}} B · {{end}}
+        sha256 <span class="font-mono">{{.Artifact.SHA256}}</span>
+      </p>
+    </div>
+    <div class="flex shrink-0 items-center gap-2">
+      <a href="/artifacts/{{.Artifact.ID}}/raw" target="_blank"
+         class="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800">
+        Open raw
+      </a>
+      <a href="/artifacts/{{.Artifact.ID}}/download"
+         class="rounded-md bg-indigo-500/90 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-400">
+        Download
+      </a>
+    </div>
+  </div>
+
+  {{if .PreviewError}}
+  <div class="rounded-md border border-rose-700/40 bg-rose-900/30 px-4 py-3 text-sm text-rose-200">
+    {{.PreviewError}}
+  </div>
+  {{else if .PreviewBinary}}
+  <div class="rounded-md border border-amber-700/40 bg-amber-900/20 px-4 py-3 text-sm text-amber-200">
+    This file is binary — inline preview isn't available. Use the
+    <a href="/artifacts/{{.Artifact.ID}}/download" class="underline">Download</a> button to grab it.
+  </div>
+  {{else}}
+  {{if .PreviewTooBig}}
+  <div class="rounded-md border border-amber-700/40 bg-amber-900/20 px-4 py-2 text-xs text-amber-200">
+    File larger than 256 KiB — only the first 256 KiB are shown below.
+    <a href="/artifacts/{{.Artifact.ID}}/download" class="underline">Download the full file</a> if you need the whole thing.
+  </div>
+  {{end}}
+  <div class="relative overflow-hidden rounded-lg border border-slate-800 bg-slate-950">
+    <div class="flex items-center justify-between border-b border-slate-800 bg-slate-900/60 px-3 py-1.5">
+      <span class="font-mono text-[11px] uppercase tracking-wider text-slate-400">
+        {{if .PreviewLang}}{{.PreviewLang}}{{else}}plain{{end}}
+      </span>
+      <button type="button"
+              class="rounded-md border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-800"
+              onclick="(function(b){const c=b.closest('div').nextElementSibling.querySelector('code'); navigator.clipboard&&navigator.clipboard.writeText(c.innerText); b.textContent='copied'; setTimeout(()=>b.textContent='Copy',1200);})(this)">
+        Copy
+      </button>
+    </div>
+    <pre class="m-0 overflow-x-auto p-4 text-xs leading-relaxed"><code class="hljs {{if .PreviewLang}}language-{{.PreviewLang}}{{end}}">{{.PreviewBody}}</code></pre>
+  </div>
+  <script>
+    (function(){
+      if (window.hljs && typeof window.hljs.highlightAll === 'function') {
+        window.hljs.highlightAll();
+      }
+    })();
+  </script>
+  {{end}}
+</div>
+{{end}}
