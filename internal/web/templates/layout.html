@@ -6,9 +6,67 @@
   <title>{{.Title}} · devin-key-manager</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <!-- Markdown rendering + syntax highlighting for chat bubbles (PR-5). -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js" defer></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css">
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js" defer></script>
   <style>
     body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
     .pill { @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium; }
+    /* Markdown body styling — keeps Devin's prose readable without overpowering
+       the chat bubble layout. */
+    .md-body { line-height: 1.55; }
+    .md-body p { margin: 0 0 0.6em; }
+    .md-body p:last-child { margin-bottom: 0; }
+    .md-body strong { color: #f1f5f9; font-weight: 600; }
+    .md-body em { color: #cbd5e1; font-style: italic; }
+    .md-body ul, .md-body ol { margin: 0.3em 0 0.6em 1.2em; padding: 0; }
+    .md-body ul { list-style: disc; }
+    .md-body ol { list-style: decimal; }
+    .md-body li { margin: 0.15em 0; }
+    .md-body h1, .md-body h2, .md-body h3, .md-body h4 {
+      font-weight: 600; color: #f1f5f9; margin: 0.6em 0 0.3em;
+    }
+    .md-body h1 { font-size: 1.15em; }
+    .md-body h2 { font-size: 1.08em; }
+    .md-body h3, .md-body h4 { font-size: 1em; }
+    .md-body a { color: #818cf8; text-decoration: underline; word-break: break-word; }
+    .md-body a:hover { color: #a5b4fc; }
+    .md-body code:not(pre code) {
+      background: rgba(15, 23, 42, 0.7); color: #fbbf24;
+      padding: 1px 6px; border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.88em;
+    }
+    .md-body pre {
+      background: #0f172a; border: 1px solid #1e293b; border-radius: 8px;
+      padding: 10px 12px; margin: 0.5em 0; overflow-x: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.85em; position: relative;
+    }
+    .md-body pre code { background: transparent; padding: 0; color: #e2e8f0; }
+    .md-body blockquote {
+      border-left: 3px solid #475569; padding-left: 0.8em;
+      color: #cbd5e1; margin: 0.5em 0;
+    }
+    .md-body table {
+      border-collapse: collapse; margin: 0.5em 0; font-size: 0.88em;
+    }
+    .md-body th, .md-body td {
+      border: 1px solid #334155; padding: 4px 8px;
+    }
+    .md-body th { background: #1e293b; }
+    /* Copy-to-clipboard button on every code block. */
+    .md-copy {
+      position: absolute; top: 4px; right: 4px;
+      background: rgba(15, 23, 42, 0.85); color: #cbd5e1;
+      border: 1px solid #334155; border-radius: 4px;
+      padding: 2px 8px; font-size: 11px; cursor: pointer;
+      opacity: 0; transition: opacity 0.12s;
+    }
+    .md-body pre:hover .md-copy { opacity: 1; }
+    .md-copy:hover { background: #1e293b; color: #f1f5f9; }
+    .md-copy--ok { color: #34d399 !important; }
   </style>
 </head>
 <body class="min-h-full">
@@ -28,6 +86,114 @@
   <main class="mx-auto max-w-6xl px-6 py-8">
     {{template "content" .}}
   </main>
+  <script>
+    // Markdown renderer for chat bubbles.
+    //
+    // Two correctness concerns drive the design here:
+    //   1. The chat stream is polled every 4s by HTMX. Without caching we
+    //      would re-parse every message's markdown and re-run highlight.js
+    //      on every code block on every tick — a few hundred ms of UI
+    //      jank per poll for a long chat. We cache rendered HTML by
+    //      message id (data-md-key) + raw content hash, so unchanged
+    //      messages restore from cache in O(1).
+    //   2. The scroll container (#chat-scroll) is now OUTSIDE the swapped
+    //      #chat-stream element, so the container survives the swap.
+    //      That preserves scroll position automatically when reading
+    //      historical messages, while still letting us auto-stick to the
+    //      bottom when the user IS at the bottom (i.e. tailing live).
+    (function () {
+      var mdCache = Object.create(null);
+      function djb2(s) {
+        var h = 5381;
+        for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+        return h;
+      }
+      function attachCopyButton(pre, code) {
+        if (!pre || pre.querySelector(".md-copy")) return;
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "md-copy";
+        btn.textContent = "Copy";
+        btn.addEventListener("click", function () {
+          navigator.clipboard.writeText(code.innerText || code.textContent || "").then(function () {
+            btn.textContent = "Copied";
+            btn.classList.add("md-copy--ok");
+            setTimeout(function () {
+              btn.textContent = "Copy";
+              btn.classList.remove("md-copy--ok");
+            }, 1200);
+          });
+        });
+        pre.appendChild(btn);
+      }
+      function renderAll(root) {
+        if (typeof marked === "undefined") return;
+        marked.use({
+          gfm: true,
+          breaks: true,
+          mangle: false,
+          headerIds: false,
+        });
+        (root || document).querySelectorAll("[data-md]:not([data-md-done])").forEach(function (el) {
+          var src = el.getAttribute("data-md-src") || el.textContent;
+          var key = el.getAttribute("data-md-key");
+          var cacheKey = key ? key + ":" + djb2(src) : "";
+          el.classList.add("md-body");
+          if (cacheKey && mdCache[cacheKey]) {
+            // Restore cached HTML — skip marked + highlight.js entirely.
+            el.innerHTML = mdCache[cacheKey];
+          } else {
+            el.innerHTML = marked.parse(src);
+            el.querySelectorAll("pre code").forEach(function (code) {
+              if (typeof hljs !== "undefined") {
+                try { hljs.highlightElement(code); } catch (e) {}
+              }
+              attachCopyButton(code.parentElement, code);
+            });
+            if (cacheKey) mdCache[cacheKey] = el.innerHTML;
+          }
+          // Always (re)attach copy handlers — innerHTML restore loses the
+          // listeners but keeps the .md-copy DOM nodes from the cached
+          // markup; the click handler we attached above is gone, so wire
+          // a fresh one over the existing button.
+          el.querySelectorAll("pre code").forEach(function (code) {
+            var pre = code.parentElement;
+            var existing = pre && pre.querySelector(".md-copy");
+            if (existing) existing.remove();
+            attachCopyButton(pre, code);
+          });
+          el.setAttribute("data-md-done", "1");
+        });
+      }
+
+      // Sticky-bottom scroll: only auto-scroll the chat container to the
+      // bottom when the user was within 80px of the bottom BEFORE the
+      // swap. Otherwise leave them where they are (mid-history reading).
+      var stickyBottom = true;
+      function recordSticky() {
+        var sc = document.getElementById("chat-scroll");
+        if (!sc) return;
+        stickyBottom = (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < 80;
+      }
+      function applySticky() {
+        var sc = document.getElementById("chat-scroll");
+        if (!sc) return;
+        if (stickyBottom) sc.scrollTop = sc.scrollHeight;
+      }
+      document.addEventListener("scroll", recordSticky, true);
+
+      window.renderMarkdown = renderAll;
+      document.addEventListener("DOMContentLoaded", function () {
+        renderAll(document);
+        applySticky();
+      });
+      document.addEventListener("htmx:beforeSwap", function () { recordSticky(); });
+      document.addEventListener("htmx:afterSwap", function (evt) {
+        renderAll(evt.target);
+        applySticky();
+      });
+    })();
+  </script>
   <footer class="mx-auto max-w-6xl px-6 pb-8 pt-12 text-xs text-slate-500">
     Local dashboard — listening on this machine only. Master key file: <code class="rounded bg-slate-900 px-1.5 py-0.5">{{.MasterKeyPath}}</code>
   </footer>

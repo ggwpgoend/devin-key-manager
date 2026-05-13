@@ -69,6 +69,7 @@ type Session struct {
 	EndedAt        *time.Time
 	EndReason      string
 	LastPolledAt   *time.Time
+	Notes          string
 }
 
 // Message is a single entry in the session conversation cache.
@@ -191,7 +192,8 @@ func (r *Repo) MarkPolled(ctx context.Context, id string) error {
 func (r *Repo) Get(ctx context.Context, id string) (Session, error) {
 	row := r.db.QueryRowContext(ctx,
 		`SELECT id, task_id, key_id, COALESCE(devin_session_id,''), status,
-		        started_at, ended_at, COALESCE(end_reason,''), last_polled_at
+		        started_at, ended_at, COALESCE(end_reason,''), last_polled_at,
+		        COALESCE(notes,'')
 		 FROM sessions WHERE id = ?`, id)
 	s, err := scanSession(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -200,11 +202,27 @@ func (r *Repo) Get(ctx context.Context, id string) (Session, error) {
 	return s, err
 }
 
+// SetNotes persists the user's private notes for a session. The notes are
+// never forwarded to Devin; they live only in the local SQLite store.
+func (r *Repo) SetNotes(ctx context.Context, id, notes string) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE sessions SET notes = ? WHERE id = ?`, notes, id)
+	if err != nil {
+		return fmt.Errorf("sessions: set notes: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ListByTask returns all sessions for a task, newest first.
 func (r *Repo) ListByTask(ctx context.Context, taskID string) ([]Session, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, task_id, key_id, COALESCE(devin_session_id,''), status,
-		        started_at, ended_at, COALESCE(end_reason,''), last_polled_at
+		        started_at, ended_at, COALESCE(end_reason,''), last_polled_at,
+		        COALESCE(notes,'')
 		 FROM sessions WHERE task_id = ? ORDER BY started_at DESC`, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("sessions: list by task: %w", err)
@@ -226,7 +244,8 @@ func (r *Repo) ListByTask(ctx context.Context, taskID string) ([]Session, error)
 func (r *Repo) ListActive(ctx context.Context) ([]Session, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, task_id, key_id, COALESCE(devin_session_id,''), status,
-		        started_at, ended_at, COALESCE(end_reason,''), last_polled_at
+		        started_at, ended_at, COALESCE(end_reason,''), last_polled_at,
+		        COALESCE(notes,'')
 		 FROM sessions
 		 WHERE status IN ('creating','running','blocked','handoff_pending')
 		 ORDER BY started_at ASC`)
@@ -352,7 +371,7 @@ func scanSession(s rowScanner) (Session, error) {
 		lastPolledAt sql.NullTime
 	)
 	if err := s.Scan(&sess.ID, &sess.TaskID, &sess.KeyID, &sess.DevinSessionID,
-		&status, &sess.StartedAt, &endedAt, &sess.EndReason, &lastPolledAt); err != nil {
+		&status, &sess.StartedAt, &endedAt, &sess.EndReason, &lastPolledAt, &sess.Notes); err != nil {
 		return Session{}, fmt.Errorf("sessions: scan: %w", err)
 	}
 	sess.Status = Status(status)
