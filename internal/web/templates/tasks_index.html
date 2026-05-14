@@ -20,6 +20,36 @@
 </div>
 {{end}}
 
+<!-- PR-15: AI semantic search over past tasks. -->
+<div class="mt-6 rounded-lg border border-slate-800 bg-slate-900/40 p-3">
+  <div class="flex items-center gap-2">
+    <svg class="h-4 w-4 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+    <input id="task-similar-q" type="search" placeholder="Find similar past tasks &mdash; e.g. 'auth bug' / 'rename to Cyrillic-safe' (semantic)" class="flex-1 bg-transparent text-sm text-slate-100 placeholder-slate-500 focus:outline-none" />
+    <button id="task-similar-go" class="rounded bg-indigo-500 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-400">Search</button>
+    <button id="task-similar-clear" class="text-xs text-slate-400 hover:text-slate-200">clear</button>
+  </div>
+  <ul id="task-similar-results" class="mt-2 space-y-1 text-sm"></ul>
+</div>
+<script>
+(function(){
+  const q = document.getElementById('task-similar-q');
+  const out = document.getElementById('task-similar-results');
+  async function run(){
+    const v = q.value.trim();
+    if (!v){ out.innerHTML = ''; return; }
+    const r = await fetch('/api/ai/similar-tasks?limit=8&q='+encodeURIComponent(v));
+    if (!r.ok){ out.innerHTML = '<li class="text-rose-400">search failed</li>'; return; }
+    const j = await r.json();
+    if (!(j.tasks||[]).length){ out.innerHTML = '<li class="text-slate-500">no semantic matches.</li>'; return; }
+    out.innerHTML = j.tasks.map(t => '<li class="rounded border border-slate-800 bg-slate-950 p-2"><a href="/tasks/'+t.id+'" class="text-indigo-300 hover:text-indigo-200">'+escapeHTML(t.title)+'</a> <span class="text-xs text-slate-500">score '+(t.score||0).toFixed(2)+' · '+t.status+(t.tags?' · '+escapeHTML(t.tags):'')+'</span><div class="text-xs text-slate-400 mt-1">'+escapeHTML(t.prompt)+'</div></li>').join('');
+  }
+  function escapeHTML(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c])); }
+  document.getElementById('task-similar-go').addEventListener('click', run);
+  document.getElementById('task-similar-clear').addEventListener('click', () => { q.value=''; out.innerHTML=''; });
+  q.addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); run(); } });
+})();
+</script>
+
 {{if not .Tasks}}
 <div class="mt-8 rounded-lg border border-dashed border-slate-700 bg-slate-900/40 p-12 text-center text-sm text-slate-400">
   No tasks yet. Click <span class="text-indigo-300">New task</span> to submit a prompt — the manager will pick the next available key and open a session for it.
@@ -30,6 +60,7 @@
     <thead class="bg-slate-900/60 text-xs uppercase tracking-wider text-slate-400">
       <tr>
         <th class="px-4 py-3 text-left">Title</th>
+        <th class="px-4 py-3 text-left">Tags</th>
         <th class="px-4 py-3 text-left">Status</th>
         <th class="px-4 py-3 text-left">Updated</th>
         <th class="px-4 py-3 text-right">Actions</th>
@@ -41,6 +72,7 @@
         <td class="px-4 py-3">
           <a href="/tasks/{{.ID}}" class="font-medium text-slate-100 hover:text-indigo-300">{{.Title}}</a>
         </td>
+        <td class="px-4 py-3 text-xs font-mono text-slate-300">{{if .Tags}}{{.Tags}}{{else}}<span class="text-slate-600">—</span>{{end}}</td>
         <td class="px-4 py-3">
           <span class="pill {{if eq (printf "%s" .Status) "running"}}bg-emerald-900/40 text-emerald-200
                             {{else if eq (printf "%s" .Status) "completed"}}bg-sky-900/40 text-sky-200

@@ -24,6 +24,8 @@ import (
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/manager"
 	"github.com/ggwpgoend/devin-key-manager/internal/notifications"
+	"github.com/ggwpgoend/devin-key-manager/internal/observability"
+	"github.com/ggwpgoend/devin-key-manager/internal/pipelines"
 	"github.com/ggwpgoend/devin-key-manager/internal/scheduler"
 	"github.com/ggwpgoend/devin-key-manager/internal/schedules"
 	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
@@ -80,6 +82,9 @@ func run() error {
 	schedulesRepo := schedules.NewRepo(db)
 	notificationsRepo := notifications.NewRepo(db)
 	attachmentsRepo := attachments.NewRepo(db, nil)
+	pipelinesRepo := pipelines.NewRepo(db)
+	pipelineExec := pipelines.NewExecutor(pipelinesRepo, logger)
+	observabilityRepo := observability.NewRepo(db)
 
 	// The downloader needs a BearerProvider. We create the manager first
 	// with a nil downloader, then wire the downloader after the manager
@@ -155,6 +160,9 @@ func run() error {
 		Schedules:     schedulesRepo,
 		Notifications: notificationsRepo,
 		Attachments:   attachmentsRepo,
+		Pipelines:     pipelinesRepo,
+		PipelineExec:  pipelineExec,
+		Observability: observabilityRepo,
 		Bus:           bus,
 	}, cfg.MasterKeyPath)
 	if err != nil {

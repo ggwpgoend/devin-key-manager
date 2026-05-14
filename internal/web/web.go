@@ -22,6 +22,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/ggwpgoend/devin-key-manager/internal/aisearch"
 	"github.com/ggwpgoend/devin-key-manager/internal/artifacts"
 	"github.com/ggwpgoend/devin-key-manager/internal/attachments"
 	"github.com/ggwpgoend/devin-key-manager/internal/devin"
@@ -30,6 +31,8 @@ import (
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/manager"
 	"github.com/ggwpgoend/devin-key-manager/internal/notifications"
+	"github.com/ggwpgoend/devin-key-manager/internal/observability"
+	"github.com/ggwpgoend/devin-key-manager/internal/pipelines"
 	"github.com/ggwpgoend/devin-key-manager/internal/schedules"
 	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
 	"github.com/ggwpgoend/devin-key-manager/internal/tasks"
@@ -58,6 +61,9 @@ type Server struct {
 	schedules     *schedules.Repo
 	notifs        *notifications.Repo
 	attachments   *attachments.Repo
+	pipelines     *pipelines.Repo
+	pipelineExec  *pipelines.Executor
+	observability *observability.Repo
 	bus           *events.Bus
 	manager       *manager.Manager
 	pages         map[string]*template.Template
@@ -82,6 +88,11 @@ var pageContentFiles = map[string]string{
 	"session_chat":    "templates/session_chat.html",
 	"session_files":   "templates/session_files.html",
 	"schedules_index": "templates/schedules_index.html",
+	// PR-13: pipeline editor (E43.1).
+	"pipelines_index": "templates/pipelines_index.html",
+	"pipeline_editor": "templates/pipeline_editor.html",
+	// PR-14: observability tab.
+	"observability": "templates/observability.html",
 }
 
 // partialFiles enumerates the HTMX partial templates rendered without the
@@ -106,6 +117,9 @@ type Deps struct {
 	Schedules     *schedules.Repo
 	Notifications *notifications.Repo
 	Attachments   *attachments.Repo
+	Pipelines     *pipelines.Repo
+	PipelineExec  *pipelines.Executor
+	Observability *observability.Repo
 	Bus           *events.Bus
 	Manager       *manager.Manager
 }
@@ -157,6 +171,9 @@ func NewServer(logger *slog.Logger, deps Deps, masterKeyPath string) (*Server, e
 		schedules:     deps.Schedules,
 		notifs:        deps.Notifications,
 		attachments:   deps.Attachments,
+		pipelines:     deps.Pipelines,
+		pipelineExec:  deps.PipelineExec,
+		observability: deps.Observability,
 		bus:           deps.Bus,
 		manager:       deps.Manager,
 		pages:         pages,
@@ -250,6 +267,61 @@ func (s *Server) Handler() http.Handler {
 
 	r.Route("/handoffs", func(r chi.Router) {
 		r.Get("/{id}", s.handleHandoffDetail)
+	})
+
+	// PR-13: pipeline editor (E43.1). Routes:
+	//   GET    /pipelines                 — list view
+	//   POST   /pipelines                 — create new pipeline
+	//   GET    /pipelines/{id}            — editor canvas
+	//   PUT    /pipelines/{id}            — update header
+	//   DELETE /pipelines/{id}            — delete
+	//   GET    /pipelines/{id}/graph      — JSON graph (nodes + edges)
+	//   PUT    /pipelines/{id}/graph      — replace nodes + edges atomically
+	//   POST   /pipelines/{id}/runs       — start a run (simulated)
+	//   GET    /pipelines/{id}/runs       — list runs
+	//   GET    /pipeline-runs/{run_id}    — run detail (steps)
+	//   POST   /pipeline-runs/{run_id}/rollback — rewind one step
+	r.Route("/pipelines", func(r chi.Router) {
+		r.Get("/", s.handlePipelinesIndex)
+		r.Post("/", s.handlePipelinesCreate)
+		r.Get("/{id}", s.handlePipelineEditor)
+		r.Put("/{id}", s.handlePipelineUpdateHeader)
+		r.Delete("/{id}", s.handlePipelineDelete)
+		r.Get("/{id}/graph", s.handlePipelineGraphGet)
+		r.Put("/{id}/graph", s.handlePipelineGraphReplace)
+		r.Post("/{id}/runs", s.handlePipelineStartRun)
+		r.Get("/{id}/runs", s.handlePipelineListRuns)
+	})
+	// PR-14: observability tab. UI page + JSON endpoints for time-series
+	// (sessions, messages, handoffs, tasks) and per-task session-graphs.
+	r.Get("/observability", s.handleObservabilityIndex)
+	r.Route("/api/observability", func(r chi.Router) {
+		r.Get("/timeseries", s.handleObservabilityTimeseries)
+		r.Get("/state-breakdown", s.handleObservabilityStateBreakdown)
+		r.Get("/top-keys", s.handleObservabilityTopKeys)
+		r.Get("/session-graph/{task_id}", s.handleObservabilitySessionGraph)
+	})
+
+	// PR-15: AI/search helpers. All deterministic local computation.
+	r.Route("/api/ai", func(r chi.Router) {
+		r.Post("/autotag", s.handleAIAutotag)
+		r.Post("/tokens", s.handleAITokens)
+		r.Get("/suggest", s.handleAISuggest)
+		r.Get("/similar-tasks", s.handleAISimilarTasks)
+	})
+	r.Put("/api/tasks/{id}/tags", s.handleSetTaskTags)
+
+	// PR-16: lint-on-incoming, key lifecycle history, notification dispatch.
+	r.Get("/api/artifacts/{id}/lint", s.handleArtifactLint)
+	r.Get("/api/keys/{id}/history", s.handleKeyHistory)
+	r.Post("/api/notifications/dispatch", s.handleNotificationDispatch)
+	// PR-16: JSON endpoint for the browser extension to POST keys to.
+	r.Post("/api/keys", s.handleAPIKeysCreate)
+	r.Options("/api/keys", s.handleAPIKeysCreate)
+
+	r.Route("/pipeline-runs", func(r chi.Router) {
+		r.Get("/{run_id}", s.handlePipelineRunDetail)
+		r.Post("/{run_id}/rollback", s.handlePipelineRunRollback)
 	})
 
 	r.Route("/schedules", func(r chi.Router) {
@@ -642,6 +714,13 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("start task failed", "err", err)
 		s.renderPartial(w, "task_form", dialogData{Error: msg})
 		return
+	}
+	// PR-15: best-effort auto-tag from the prompt. Don't block task
+	// creation on a tags failure — the user can always edit tags later.
+	if tags := aisearch.AutoTag(in.Prompt); len(tags) > 0 && result.Task.ID != "" {
+		if err := s.tasks.SetTags(r.Context(), result.Task.ID, strings.Join(tags, ",")); err != nil {
+			s.logger.Warn("autotag set failed", "task_id", result.Task.ID, "err", err)
+		}
 	}
 	s.redirect(w, r, "/sessions/"+result.Session.ID)
 }
@@ -1325,6 +1404,16 @@ type pageData struct {
 	Stats       dashStats
 	RecentTasks []tasks.Task
 	KeyRollup   []keyRollup
+
+	// Pipelines (PR-13).
+	Pipelines     []pipelinesIndexRow
+	PipelineRow   pipelines.Pipeline
+	GraphJSON     string
+	RunsJSON      string
+	NavCurrent    string
+
+	// Observability (PR-14).
+	TasksAll []tasks.Task
 }
 
 // dashStats is the bento KPI bundle for the dashboard.

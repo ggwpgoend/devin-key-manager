@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>devin-key-manager</title>
+<style>
+  body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; padding: 12px; width: 280px; background: #090c10; color: #e2e8f0; font-size: 13px; }
+  h1 { font-size: 13px; margin: 0 0 8px 0; font-weight: 600; }
+  label { display: block; margin: 8px 0 2px 0; color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  input, textarea, select { width: 100%; box-sizing: border-box; padding: 4px 6px; background: #0f1419; color: #e2e8f0; border: 1px solid #1f2937; border-radius: 4px; font-size: 12px; }
+  textarea { min-height: 60px; resize: vertical; font-family: ui-monospace, monospace; }
+  button { margin-top: 10px; width: 100%; padding: 6px 0; background: #4a7a9b; color: #fff; border: 0; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  button.secondary { background: transparent; border: 1px solid #1f2937; color: #94a3b8; }
+  .row { display: flex; gap: 8px; }
+  .status { margin-top: 8px; font-size: 11px; color: #94a3b8; }
+</style>
+</head>
+<body>
+<h1>devin-key-manager</h1>
+<label>Manager URL</label>
+<input id="baseURL" type="text" placeholder="http://localhost:5179" />
+<label>API key</label>
+<textarea id="keyValue" placeholder="paste key here…"></textarea>
+<div class="row">
+  <div style="flex:1">
+    <label>Label</label>
+    <input id="keyLabel" type="text" placeholder="trial-may" />
+  </div>
+  <div style="flex:1">
+    <label>Plan</label>
+    <select id="keyPlan">
+      <option value="free">free</option>
+      <option value="trial">trial</option>
+      <option value="paid">paid</option>
+    </select>
+  </div>
+</div>
+<button id="send">Send to manager</button>
+<button id="saveBase" class="secondary">Save manager URL</button>
+<div class="status" id="status"></div>
+<script src="popup.js"></script>
+</body>
+</html>

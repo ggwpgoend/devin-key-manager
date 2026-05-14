@@ -235,6 +235,7 @@ func (s *Server) handleEventsSince(w http.ResponseWriter, r *http.Request) {
 			TaskID:    e.RelatedTaskID,
 			SessionID: e.RelatedSessionID,
 			CreatedAt: e.CreatedAt.UnixMilli(),
+			Actions:   e.Actions,
 		})
 	}
 	// LastID is the highest event id at query time. The frontend uses it
@@ -257,14 +258,15 @@ type eventsResponse struct {
 }
 
 type eventJSON struct {
-	ID        int64  `json:"id"`
-	Kind      string `json:"kind"`
-	Title     string `json:"title"`
-	Body      string `json:"body"`
-	URL       string `json:"url"`
-	TaskID    string `json:"task_id,omitempty"`
-	SessionID string `json:"session_id,omitempty"`
-	CreatedAt int64  `json:"created_at"`
+	ID        int64                  `json:"id"`
+	Kind      string                 `json:"kind"`
+	Title     string                 `json:"title"`
+	Body      string                 `json:"body"`
+	URL       string                 `json:"url"`
+	TaskID    string                 `json:"task_id,omitempty"`
+	SessionID string                 `json:"session_id,omitempty"`
+	CreatedAt int64                  `json:"created_at"`
+	Actions   []notifications.Action `json:"actions,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
