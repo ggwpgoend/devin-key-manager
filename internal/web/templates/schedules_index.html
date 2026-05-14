@@ -39,6 +39,16 @@
           <input type="number" min="0" max="59" name="daily_minute" value="{{.ScheduleForm.DailyMinute}}" class="w-16 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm" />
           <span class="text-xs text-slate-400">(server local time — currently <span class="font-mono">{{.ServerTime}}</span>, zone <span class="font-mono">{{.ServerTZ}}</span>)</span>
         </label>
+        <label class="flex items-center gap-2 text-sm" title="5-field cron: minute hour dom mon dow. Examples: '0 9 * * 1-5' weekdays 9am.">
+          <input type="radio" name="kind" value="cron" {{if eq .ScheduleForm.Kind "cron"}}checked{{end}} />
+          Cron
+          <input type="text" name="cron_expr" value="{{.ScheduleForm.CronExpr}}" placeholder="0 9 * * 1-5" class="w-48 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm font-mono" />
+        </label>
+        <label class="flex items-center gap-2 text-sm" title="Fires once at the given timestamp, then disables itself.">
+          <input type="radio" name="kind" value="oneoff" {{if eq .ScheduleForm.Kind "oneoff"}}checked{{end}} />
+          One-off at
+          <input type="datetime-local" name="fire_at" value="{{.ScheduleForm.FireAt}}" class="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm" />
+        </label>
       </fieldset>
       <button type="submit" class="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500">Create schedule</button>
     </form>
@@ -56,8 +66,12 @@
                     {{if .Enabled}}<span class="pill bg-emerald-900/40 text-emerald-300">enabled</span>{{else}}<span class="pill bg-slate-800 text-slate-400">disabled</span>{{end}}
                     {{if eq (printf "%s" .Kind) "interval"}}
                       <span class="pill bg-slate-800 text-slate-300">every {{.IntervalSeconds}}s</span>
-                    {{else}}
+                    {{else if eq (printf "%s" .Kind) "daily"}}
                       <span class="pill bg-slate-800 text-slate-300">daily {{printf "%02d:%02d" .DailyHour .DailyMinute}}</span>
+                    {{else if eq (printf "%s" .Kind) "cron"}}
+                      <span class="pill bg-slate-800 text-slate-300 font-mono">{{.CronExpr}}</span>
+                    {{else if eq (printf "%s" .Kind) "oneoff"}}
+                      <span class="pill bg-slate-800 text-slate-300">once @ {{.NextRunAt.Format "2006-01-02 15:04"}}</span>
                     {{end}}
                   </div>
                   <div class="text-xs text-slate-500">Next: {{.NextRunAt.Format "2006-01-02 15:04"}}{{if .LastRunAt.Valid}} · last: {{.LastRunAt.Time.Format "2006-01-02 15:04"}}{{end}}{{if .LastError}} · <span class="text-rose-300">err: {{.LastError}}</span>{{end}}</div>

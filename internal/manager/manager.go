@@ -119,6 +119,10 @@ func (m *Manager) SetNotifications(n *notifications.Repo) { m.notifs = n }
 type StartTaskInput struct {
 	Title  string
 	Prompt string
+	// PreferKeyID, when non-empty, asks the picker to favour this key
+	// over the round-robin default. Falls back transparently if the key
+	// is no longer active. Drives session-to-key stickiness (A9).
+	PreferKeyID string
 }
 
 // StartTaskResult is the outcome of StartTask.
@@ -150,7 +154,15 @@ func (m *Manager) StartTask(ctx context.Context, in StartTaskInput) (StartTaskRe
 		in.Title = deriveTitle(in.Prompt)
 	}
 
-	key, err := m.keys.Pick(ctx)
+	var (
+		key keys.Key
+		err error
+	)
+	if strings.TrimSpace(in.PreferKeyID) != "" {
+		key, err = m.keys.PickWithPreference(ctx, in.PreferKeyID)
+	} else {
+		key, err = m.keys.Pick(ctx)
+	}
 	if err != nil {
 		return StartTaskResult{}, err
 	}

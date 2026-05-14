@@ -55,8 +55,53 @@
     No files yet. When Devin shares a screenshot, binary, or any other URL in the chat, it will appear here.
   </div>
   {{else}}
+  {{if .ArtifactGroups}}
+  {{range .ArtifactGroups}}
+  <h3 class="mt-6 mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">{{.Label}} · {{len .Artifacts}}</h3>
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-    {{range .Artifacts}}
+    {{range .Artifacts}}{{template "_artifact_card" .}}{{end}}
+  </div>
+  {{end}}
+  {{else}}
+  <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    {{range .Artifacts}}{{template "_artifact_card" .}}{{end}}
+  </div>
+  {{end}}
+  {{end}}
+</div>
+<script>
+// PR-16: per-artifact lint preview. Click the Lint button to run the
+// built-in checker; results render inline above the actions row.
+document.querySelectorAll('.pr16-lint').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    btn.disabled = true; btn.textContent = 'linting…';
+    try {
+      const r = await fetch('/api/artifacts/'+btn.dataset.id+'/lint');
+      if (!r.ok){ btn.textContent = 'failed'; return; }
+      const j = await r.json();
+      const card = btn.closest('.flex.flex-col');
+      const old = card.querySelector('.lint-summary');
+      if (old) old.remove();
+      const box = document.createElement('div');
+      box.className = 'lint-summary mt-2 rounded border border-slate-800 bg-slate-950 p-2 text-[11px]';
+      const c = j.counts || {error:0, warn:0, info:0};
+      const top = '<div class="font-medium text-slate-300">'+(j.language||'text')+' · '+c.error+' err · '+c.warn+' warn · '+c.info+' info</div>';
+      const items = (j.findings||[]).slice(0, 10).map(f => {
+        const color = f.severity === 'error' ? 'text-rose-300' : f.severity === 'warn' ? 'text-amber-300' : 'text-slate-400';
+        const line = f.line ? '<span class="font-mono text-slate-500">L'+f.line+'</span> ' : '';
+        return '<li class="'+color+'">'+line+f.code+' — '+f.message+'</li>';
+      }).join('');
+      box.innerHTML = top + (items ? '<ul class="mt-1 space-y-0.5">'+items+'</ul>' : '<div class="text-emerald-300">no issues</div>');
+      card.appendChild(box);
+      btn.textContent = 'Re-lint';
+      btn.disabled = false;
+    } catch (_) { btn.textContent = 'failed'; }
+  });
+});
+</script>
+{{end}}
+
+{{define "_artifact_card"}}
     <div class="flex flex-col overflow-hidden rounded-lg border border-slate-800 bg-slate-900/40">
       <div class="flex h-44 items-center justify-center border-b border-slate-800 bg-slate-950">
         {{if and (eq (printf "%s" .Status) "ready") .IsImage}}
@@ -113,38 +158,4 @@
         </div>
       </div>
     </div>
-    {{end}}
-  </div>
-  {{end}}
-</div>
-<script>
-// PR-16: per-artifact lint preview. Click the Lint button to run the
-// built-in checker; results render inline above the actions row.
-document.querySelectorAll('.pr16-lint').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    btn.disabled = true; btn.textContent = 'linting…';
-    try {
-      const r = await fetch('/api/artifacts/'+btn.dataset.id+'/lint');
-      if (!r.ok){ btn.textContent = 'failed'; return; }
-      const j = await r.json();
-      const card = btn.closest('.flex.flex-col');
-      const old = card.querySelector('.lint-summary');
-      if (old) old.remove();
-      const box = document.createElement('div');
-      box.className = 'lint-summary mt-2 rounded border border-slate-800 bg-slate-950 p-2 text-[11px]';
-      const c = j.counts || {error:0, warn:0, info:0};
-      const top = '<div class="font-medium text-slate-300">'+(j.language||'text')+' · '+c.error+' err · '+c.warn+' warn · '+c.info+' info</div>';
-      const items = (j.findings||[]).slice(0, 10).map(f => {
-        const color = f.severity === 'error' ? 'text-rose-300' : f.severity === 'warn' ? 'text-amber-300' : 'text-slate-400';
-        const line = f.line ? '<span class="font-mono text-slate-500">L'+f.line+'</span> ' : '';
-        return '<li class="'+color+'">'+line+f.code+' — '+f.message+'</li>';
-      }).join('');
-      box.innerHTML = top + (items ? '<ul class="mt-1 space-y-0.5">'+items+'</ul>' : '<div class="text-emerald-300">no issues</div>');
-      card.appendChild(box);
-      btn.textContent = 'Re-lint';
-      btn.disabled = false;
-    } catch (_) { btn.textContent = 'failed'; }
-  });
-});
-</script>
 {{end}}
