@@ -50,6 +50,36 @@
   </div>
   {{end}}
 
+  {{if .VersionGroups}}
+  <details open class="rounded-md border border-slate-800 bg-slate-900/40">
+    <summary class="cursor-pointer px-3 py-2 text-xs font-semibold uppercase tracking-wider text-slate-300">
+      Multiple versions detected · {{len .VersionGroups}} file(s)
+    </summary>
+    <div class="space-y-3 border-t border-slate-800 p-3">
+      {{range .VersionGroups}}
+      <div class="rounded border border-slate-800 bg-slate-950 p-2 text-xs">
+        <div class="mb-1 font-mono text-slate-200">{{.Filename}} · {{len .Artifacts}} versions</div>
+        <div class="flex flex-wrap items-center gap-2">
+          {{range $i, $a := .Artifacts}}
+          <span class="rounded-full bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-400"
+                title="{{$a.ID}}">v{{add1 $i}} · {{$a.SizeBytes}}B</span>
+          {{end}}
+        </div>
+        <div class="mt-2">
+          <button class="pr18-diff rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-800"
+                  data-filename="{{.Filename}}"
+                  {{with index .Artifacts 0}}data-left="{{.ID}}"{{end}}
+                  {{with index .Artifacts (sub1 (len .Artifacts))}}data-right="{{.ID}}"{{end}}>
+            Diff first ↔ last
+          </button>
+          <pre class="pr18-diff-out mt-2 hidden max-h-96 overflow-auto rounded bg-slate-950 p-2 font-mono text-[11px] text-slate-300"></pre>
+        </div>
+      </div>
+      {{end}}
+    </div>
+  </details>
+  {{end}}
+
   {{if not .Artifacts}}
   <div class="rounded-md border border-dashed border-slate-700 bg-slate-900/30 px-6 py-12 text-center text-sm text-slate-400">
     No files yet. When Devin shares a screenshot, binary, or any other URL in the chat, it will appear here.
@@ -72,6 +102,32 @@
 <script>
 // PR-16: per-artifact lint preview. Click the Lint button to run the
 // built-in checker; results render inline above the actions row.
+// PR-18: per-version-group diff. Click "Diff first ↔ last" to fetch the
+// unified diff between the oldest and newest version of a file and
+// render it below the button.
+document.querySelectorAll('.pr18-diff').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const out = btn.parentElement.querySelector('.pr18-diff-out');
+    const left = btn.dataset.left, right = btn.dataset.right;
+    if (!left || !right || left === right) {
+      out.textContent = 'Need at least two distinct versions to diff.';
+      out.classList.remove('hidden');
+      return;
+    }
+    btn.disabled = true;
+    const oldText = btn.textContent;
+    btn.textContent = 'diffing…';
+    try {
+      const r = await fetch('/api/artifacts/diff?left='+encodeURIComponent(left)+'&right='+encodeURIComponent(right));
+      if (!r.ok) { out.textContent = 'failed: ' + r.status; }
+      else { out.textContent = await r.text(); }
+      out.classList.remove('hidden');
+    } catch (e) { out.textContent = 'failed: ' + e; out.classList.remove('hidden'); }
+    btn.textContent = oldText;
+    btn.disabled = false;
+  });
+});
+
 document.querySelectorAll('.pr16-lint').forEach(btn => {
   btn.addEventListener('click', async () => {
     btn.disabled = true; btn.textContent = 'linting…';
