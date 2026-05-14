@@ -68,6 +68,8 @@ var pageContentFiles = map[string]string{
 var partialFiles = []string{
 	"templates/keys_index.html",
 	"templates/keys_form.html",
+	"templates/keys_bulk_form.html",
+	"templates/keys_bulk_results.html",
 	"templates/task_form.html",
 	"templates/session_chat.html",
 }
@@ -159,6 +161,9 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/", s.handleKeysIndex)
 		r.Post("/", s.handleKeysCreate)
 		r.Get("/new", s.handleKeysNewDialog)
+		r.Get("/bulk", s.handleKeysBulkDialog)
+		r.Post("/bulk", s.handleKeysBulkImport)
+		r.Post("/detect", s.handleKeysDetectPlan)
 		r.Get("/dialog/close", s.handleKeysDialogClose)
 		r.Post("/check-all", s.handleKeysCheckAll)
 		r.Get("/{id}/edit", s.handleKeysEditDialog)
@@ -254,10 +259,27 @@ func (s *Server) handleKeysCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
+	rawPlan := strings.TrimSpace(r.PostFormValue("plan"))
+	apiKey := strings.TrimSpace(r.PostFormValue("api_key"))
+	plan := keys.Plan(rawPlan)
+	flashTail := ""
+	if rawPlan == "auto" {
+		if apiKey == "" {
+			s.renderPartial(w, "keys_form", dialogData{Error: "API key is required for auto-detect."})
+			return
+		}
+		detected, status, err := s.manager.DetectPlan(r.Context(), apiKey)
+		if err != nil && status == devin.ValidateUnauthorized {
+			s.renderPartial(w, "keys_form", dialogData{Error: "Devin says the key is unauthorized. Double-check the value and try again."})
+			return
+		}
+		plan = detected
+		flashTail = "+(auto-detected+as+" + string(detected) + ")"
+	}
 	in := keys.CreateInput{
 		Label:  r.PostFormValue("label"),
-		Plan:   keys.Plan(strings.TrimSpace(r.PostFormValue("plan"))),
-		APIKey: r.PostFormValue("api_key"),
+		Plan:   plan,
+		APIKey: apiKey,
 		Notes:  r.PostFormValue("notes"),
 	}
 	if _, err := s.keys.Create(r.Context(), in); err != nil {
@@ -269,7 +291,80 @@ func (s *Server) handleKeysCreate(w http.ResponseWriter, r *http.Request) {
 		s.renderPartial(w, "keys_form", dialogData{Editing: false, Error: err.Error()})
 		return
 	}
-	s.redirect(w, r, "/keys?flash=Key+added.")
+	s.redirect(w, r, "/keys?flash=Key+added"+flashTail+".")
+}
+
+func (s *Server) handleKeysBulkDialog(w http.ResponseWriter, _ *http.Request) {
+	s.renderPartial(w, "keys_bulk_form", bulkData{})
+}
+
+func (s *Server) handleKeysBulkImport(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	payload := r.PostFormValue("payload")
+	if strings.TrimSpace(payload) == "" {
+		s.renderPartial(w, "keys_bulk_form", bulkData{Error: "Paste at least one line first."})
+		return
+	}
+	results, err := s.manager.BulkImport(r.Context(), payload)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	counts := struct{ Created, Duplicate, Unauthorized, Bad int }{}
+	for _, res := range results {
+		switch res.Outcome {
+		case manager.BulkOutcomeCreated:
+			counts.Created++
+		case manager.BulkOutcomeDuplicate:
+			counts.Duplicate++
+		case manager.BulkOutcomeUnauthorized:
+			counts.Unauthorized++
+		default:
+			counts.Bad++
+		}
+	}
+	s.renderPartial(w, "keys_bulk_results", bulkData{
+		Results:      results,
+		Created:      counts.Created,
+		Duplicate:    counts.Duplicate,
+		Unauthorized: counts.Unauthorized,
+		Bad:          counts.Bad,
+	})
+}
+
+// handleKeysDetectPlan is the HTMX hook fired when the user clicks the
+// 'Detect' chip next to the plan dropdown in the add-key dialog. Returns a
+// tiny HTML fragment that replaces the chip's label with the detected plan.
+func (s *Server) handleKeysDetectPlan(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	apiKey := strings.TrimSpace(r.PostFormValue("api_key"))
+	if apiKey == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, `<span class="text-amber-300">Paste a key first.</span>`)
+		return
+	}
+	detected, status, err := s.manager.DetectPlan(r.Context(), apiKey)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err != nil && status == devin.ValidateUnauthorized {
+		_, _ = io.WriteString(w, `<span class="text-rose-300">Unauthorized.</span>`)
+		return
+	}
+	switch status {
+	case devin.ValidateValid:
+		fmt.Fprintf(w, `<span class="text-emerald-300">Detected: %s</span>`, detected)
+	case devin.ValidateQuotaExhausted:
+		fmt.Fprintf(w, `<span class="text-amber-300">Detected: %s (quota exhausted, key is valid)</span>`, detected)
+	case devin.ValidateNetworkError:
+		_, _ = io.WriteString(w, `<span class="text-amber-300">Network error — defaulting to trial.</span>`)
+	default:
+		fmt.Fprintf(w, `<span class="text-amber-300">Inconclusive (%s) — defaulting to %s.</span>`, status, detected)
+	}
 }
 
 func (s *Server) handleKeysUpdate(w http.ResponseWriter, r *http.Request) {
@@ -918,6 +1013,16 @@ type dialogData struct {
 	Editing bool
 	Key     keys.Key
 	Error   string
+}
+
+// bulkData backs the bulk-import dialog and its results panel.
+type bulkData struct {
+	Error        string
+	Results      []manager.BulkImportResult
+	Created      int
+	Duplicate    int
+	Unauthorized int
+	Bad          int
 }
 
 // sessionRow flattens the join of sessions + keys for the task detail table.
