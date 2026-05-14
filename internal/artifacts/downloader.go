@@ -135,9 +135,13 @@ func (d *Downloader) Fetch(ctx context.Context, a Artifact) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Drain a short prefix so the diagnostic isn't completely blank.
 		preview, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		msg := fmt.Sprintf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(preview)))
+		var msg string
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			msg = "API key unauthorized or quota exhausted — try rotating to a new key"
+		} else {
+			msg = fmt.Sprintf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(preview)))
+		}
 		_ = d.repo.MarkFailed(ctx, a.ID, msg)
 		return errors.New(msg)
 	}

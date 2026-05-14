@@ -281,9 +281,11 @@
   </div>
   {{end}}
 
-  {{/* Thinking indicator when session is actively running */}}
+  {{/* Thinking indicator: show only when session is running/blocked AND the
+       last message was from the user (i.e. we're waiting for a response).
+       This prevents dots from staying stuck after Devin has already replied. */}}
   {{if or (eq (printf "%s" .Session.Status) "running") (eq (printf "%s" .Session.Status) "blocked")}}
-  {{if .MessageViews}}
+  {{if and .MessageViews .LastMsgIsUser}}
   <div class="devin-thinking mt-4">
     <div class="devin-avatar devin-avatar-sm">D</div>
     <div class="devin-thinking-content">
