@@ -132,6 +132,18 @@ func (d *Downloader) Fetch(ctx context.Context, a Artifact) error {
 		return errors.New(msg)
 	}
 
+	// Pre-flight size check (#22): if the server advertises a Content-Length
+	// larger than the configured cap, refuse the download up front rather
+	// than streaming hundreds of MiB to disk only to delete the .part file
+	// once io.LimitReader trips the limit. This matters for personal-use
+	// boxes with small disks where a runaway Devin session could fill the
+	// volume between the streamed-to-disk and the post-flight rejection.
+	if resp.ContentLength > d.maxSize {
+		msg := fmt.Sprintf("artifact advertised %d bytes (cap %d)", resp.ContentLength, d.maxSize)
+		_ = d.repo.MarkFailed(ctx, a.ID, msg)
+		return errors.New(msg)
+	}
+
 	contentType := resp.Header.Get("Content-Type")
 	dir := filepath.Join(d.root, a.SessionID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

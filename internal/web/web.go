@@ -27,6 +27,8 @@ import (
 	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/manager"
+	"github.com/ggwpgoend/devin-key-manager/internal/notifications"
+	"github.com/ggwpgoend/devin-key-manager/internal/schedules"
 	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
 	"github.com/ggwpgoend/devin-key-manager/internal/tasks"
 	"github.com/ggwpgoend/devin-key-manager/internal/version"
@@ -43,6 +45,8 @@ type Server struct {
 	sessions      *sessions.Repo
 	handoffs      *handoffs.Repo
 	artifacts     *artifacts.Repo
+	schedules     *schedules.Repo
+	notifs        *notifications.Repo
 	manager       *manager.Manager
 	pages         map[string]*template.Template
 	partials      *template.Template
@@ -60,6 +64,12 @@ var pageContentFiles = map[string]string{
 	"session_chat":     "templates/session_chat.html",
 	"session_files":    "templates/session_files.html",
 	"artifact_preview": "templates/artifact_preview.html",
+	"keys_index":      "templates/keys_index.html",
+	"tasks_index":     "templates/tasks_index.html",
+	"task_detail":     "templates/task_detail.html",
+	"session_chat":    "templates/session_chat.html",
+	"session_files":   "templates/session_files.html",
+	"schedules_index": "templates/schedules_index.html",
 }
 
 // partialFiles enumerates the HTMX partial templates rendered without the
@@ -68,18 +78,22 @@ var pageContentFiles = map[string]string{
 var partialFiles = []string{
 	"templates/keys_index.html",
 	"templates/keys_form.html",
+	"templates/keys_bulk_form.html",
+	"templates/keys_bulk_results.html",
 	"templates/task_form.html",
 	"templates/session_chat.html",
 }
 
 // Deps bundles the repositories and orchestrator the web layer depends on.
 type Deps struct {
-	Keys      *keys.Repo
-	Tasks     *tasks.Repo
-	Sessions  *sessions.Repo
-	Handoffs  *handoffs.Repo
-	Artifacts *artifacts.Repo
-	Manager   *manager.Manager
+	Keys          *keys.Repo
+	Tasks         *tasks.Repo
+	Sessions      *sessions.Repo
+	Handoffs      *handoffs.Repo
+	Artifacts     *artifacts.Repo
+	Schedules     *schedules.Repo
+	Notifications *notifications.Repo
+	Manager       *manager.Manager
 }
 
 // NewServer compiles templates and prepares the handler. masterKeyPath is
@@ -126,6 +140,8 @@ func NewServer(logger *slog.Logger, deps Deps, masterKeyPath string) (*Server, e
 		sessions:      deps.Sessions,
 		handoffs:      deps.Handoffs,
 		artifacts:     deps.Artifacts,
+		schedules:     deps.Schedules,
+		notifs:        deps.Notifications,
 		manager:       deps.Manager,
 		pages:         pages,
 		partials:      partials,
@@ -155,6 +171,9 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/", s.handleKeysIndex)
 		r.Post("/", s.handleKeysCreate)
 		r.Get("/new", s.handleKeysNewDialog)
+		r.Get("/bulk", s.handleKeysBulkDialog)
+		r.Post("/bulk", s.handleKeysBulkImport)
+		r.Post("/detect", s.handleKeysDetectPlan)
 		r.Get("/dialog/close", s.handleKeysDialogClose)
 		r.Post("/check-all", s.handleKeysCheckAll)
 		r.Get("/{id}/edit", s.handleKeysEditDialog)
@@ -181,6 +200,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/{id}/files", s.handleSessionFiles)
 		r.Get("/{id}/files.zip", s.handleSessionFilesZip)
 		r.Post("/{id}/files/open", s.handleSessionFilesOpen)
+		r.Post("/{id}/notes", s.handleSessionNotes)
 	})
 
 	r.Route("/artifacts", func(r chi.Router) {
@@ -192,6 +212,16 @@ func (s *Server) Handler() http.Handler {
 	r.Route("/handoffs", func(r chi.Router) {
 		r.Get("/{id}", s.handleHandoffDetail)
 	})
+
+	r.Route("/schedules", func(r chi.Router) {
+		r.Get("/", s.handleSchedulesIndex)
+		r.Post("/", s.handleSchedulesCreate)
+		r.Post("/{id}/toggle", s.handleSchedulesToggle)
+		r.Post("/{id}/run", s.handleSchedulesRunNow)
+		r.Delete("/{id}", s.handleSchedulesDelete)
+	})
+
+	r.Get("/events/since", s.handleEventsSince)
 
 	return r
 }
@@ -242,10 +272,27 @@ func (s *Server) handleKeysCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
+	rawPlan := strings.TrimSpace(r.PostFormValue("plan"))
+	apiKey := strings.TrimSpace(r.PostFormValue("api_key"))
+	plan := keys.Plan(rawPlan)
+	flashTail := ""
+	if rawPlan == "auto" {
+		if apiKey == "" {
+			s.renderPartial(w, "keys_form", dialogData{Error: "API key is required for auto-detect."})
+			return
+		}
+		detected, status, err := s.manager.DetectPlan(r.Context(), apiKey)
+		if err != nil && status == devin.ValidateUnauthorized {
+			s.renderPartial(w, "keys_form", dialogData{Error: "Devin says the key is unauthorized. Double-check the value and try again."})
+			return
+		}
+		plan = detected
+		flashTail = "+(auto-detected+as+" + string(detected) + ")"
+	}
 	in := keys.CreateInput{
 		Label:  r.PostFormValue("label"),
-		Plan:   keys.Plan(strings.TrimSpace(r.PostFormValue("plan"))),
-		APIKey: r.PostFormValue("api_key"),
+		Plan:   plan,
+		APIKey: apiKey,
 		Notes:  r.PostFormValue("notes"),
 	}
 	if _, err := s.keys.Create(r.Context(), in); err != nil {
@@ -257,7 +304,80 @@ func (s *Server) handleKeysCreate(w http.ResponseWriter, r *http.Request) {
 		s.renderPartial(w, "keys_form", dialogData{Editing: false, Error: err.Error()})
 		return
 	}
-	s.redirect(w, r, "/keys?flash=Key+added.")
+	s.redirect(w, r, "/keys?flash=Key+added"+flashTail+".")
+}
+
+func (s *Server) handleKeysBulkDialog(w http.ResponseWriter, _ *http.Request) {
+	s.renderPartial(w, "keys_bulk_form", bulkData{})
+}
+
+func (s *Server) handleKeysBulkImport(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	payload := r.PostFormValue("payload")
+	if strings.TrimSpace(payload) == "" {
+		s.renderPartial(w, "keys_bulk_form", bulkData{Error: "Paste at least one line first."})
+		return
+	}
+	results, err := s.manager.BulkImport(r.Context(), payload)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	counts := struct{ Created, Duplicate, Unauthorized, Bad int }{}
+	for _, res := range results {
+		switch res.Outcome {
+		case manager.BulkOutcomeCreated:
+			counts.Created++
+		case manager.BulkOutcomeDuplicate:
+			counts.Duplicate++
+		case manager.BulkOutcomeUnauthorized:
+			counts.Unauthorized++
+		default:
+			counts.Bad++
+		}
+	}
+	s.renderPartial(w, "keys_bulk_results", bulkData{
+		Results:      results,
+		Created:      counts.Created,
+		Duplicate:    counts.Duplicate,
+		Unauthorized: counts.Unauthorized,
+		Bad:          counts.Bad,
+	})
+}
+
+// handleKeysDetectPlan is the HTMX hook fired when the user clicks the
+// 'Detect' chip next to the plan dropdown in the add-key dialog. Returns a
+// tiny HTML fragment that replaces the chip's label with the detected plan.
+func (s *Server) handleKeysDetectPlan(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	apiKey := strings.TrimSpace(r.PostFormValue("api_key"))
+	if apiKey == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, `<span class="text-amber-300">Paste a key first.</span>`)
+		return
+	}
+	detected, status, err := s.manager.DetectPlan(r.Context(), apiKey)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err != nil && status == devin.ValidateUnauthorized {
+		_, _ = io.WriteString(w, `<span class="text-rose-300">Unauthorized.</span>`)
+		return
+	}
+	switch status {
+	case devin.ValidateValid:
+		fmt.Fprintf(w, `<span class="text-emerald-300">Detected: %s</span>`, detected)
+	case devin.ValidateQuotaExhausted:
+		fmt.Fprintf(w, `<span class="text-amber-300">Detected: %s (quota exhausted, key is valid)</span>`, detected)
+	case devin.ValidateNetworkError:
+		_, _ = io.WriteString(w, `<span class="text-amber-300">Network error — defaulting to trial.</span>`)
+	default:
+		fmt.Fprintf(w, `<span class="text-amber-300">Inconclusive (%s) — defaulting to %s.</span>`, status, detected)
+	}
 }
 
 func (s *Server) handleKeysUpdate(w http.ResponseWriter, r *http.Request) {
@@ -554,6 +674,30 @@ func (s *Server) handleSessionSnap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.redirect(w, r, "/sessions/"+id+"?flash="+urlEncode("Asked Devin for a screenshot. It will appear in chat shortly."))
+}
+
+// handleSessionNotes saves the user's private notes for a session. The text
+// is written as-is to the sessions.notes column and never forwarded to Devin.
+// On success we return a tiny status fragment that the notes panel swaps in
+// place of its "saving…" indicator.
+func (s *Server) handleSessionNotes(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	notes := strings.TrimRight(r.FormValue("notes"), " \t\n\r")
+	if err := s.sessions.SetNotes(r.Context(), id, notes); err != nil {
+		if errors.Is(err, sessions.ErrNotFound) {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		s.serverError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<span id="notes-status" class="text-emerald-400">saved %s</span>`,
+		time.Now().Format("15:04:05"))
 }
 
 // handleSessionFiles renders the per-session artifact gallery.
@@ -1048,13 +1192,28 @@ type pageData struct {
 	InboundHandoff  handoffs.Handoff
 	OutboundHandoff handoffs.Handoff
 
-	// Artifact preview.
-	Artifact      artifacts.Artifact
-	PreviewBody   string
-	PreviewLang   string
-	PreviewError  string
-	PreviewTooBig bool
-	PreviewBinary bool
+	// Schedules index.
+	Schedules     []schedules.Schedule
+	ScheduleError string
+	ScheduleForm  scheduleFormData
+	// ServerTime / ServerTZ are echoed back in the schedules form so the
+	// user knows which zone a "daily HH:MM" entry will resolve in. The
+	// scheduler always computes daily fires against time.Local on the
+	// server, which can be UTC in headless setups.
+	ServerTime string
+	ServerTZ   string
+}
+
+// scheduleFormData carries the pre-filled values for the schedules creation
+// form on /schedules so we can echo them back when validation fails.
+type scheduleFormData struct {
+	Title           string
+	Prompt          string
+	PlanHint        string
+	Kind            string
+	IntervalSeconds int64
+	DailyHour       int
+	DailyMinute     int
 }
 
 // messageView pairs a session message with any artifacts referenced from its
@@ -1070,6 +1229,16 @@ type dialogData struct {
 	Editing bool
 	Key     keys.Key
 	Error   string
+}
+
+// bulkData backs the bulk-import dialog and its results panel.
+type bulkData struct {
+	Error        string
+	Results      []manager.BulkImportResult
+	Created      int
+	Duplicate    int
+	Unauthorized int
+	Bad          int
 }
 
 // sessionRow flattens the join of sessions + keys for the task detail table.
