@@ -205,10 +205,6 @@
     }
   }
 
-  function escapeHTML(s){
-    return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  }
-
   async function drawSessionGraph(taskId){
     const svg = $('obs-graph');
     const status = $('obs-graph-status');

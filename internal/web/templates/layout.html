@@ -148,8 +148,49 @@
     </a>
   </nav>
 
-  <!-- Toast container for live SSE notifications. -->
-  <div id="s-toast-container" aria-live="polite"></div>
+  <script>
+    // Global helpers used by inline page scripts.
+    //
+    // window.escapeHTML: a single shared HTML-escape. Several pages used to
+    // ship their own copy of this function (escapeHTML in observability,
+    // keys, tasks, pipelines…). Centralising it here keeps the rules in
+    // one place and shrinks each page's payload.
+    window.escapeHTML = window.escapeHTML || function (s) {
+      if (s == null) return "";
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    };
+
+    // Strip ?flash= and friends from the URL once the toast/banner has been
+    // rendered, so a reload doesn't re-show the same message. We only touch
+    // history when known transient params are present.
+    (function () {
+      try {
+        var sp = new URLSearchParams(window.location.search);
+        var transient = ["flash", "error", "notice"];
+        var dirty = false;
+        transient.forEach(function (k) { if (sp.has(k)) { sp.delete(k); dirty = true; } });
+        if (dirty) {
+          var qs = sp.toString();
+          var clean = window.location.pathname + (qs ? ("?" + qs) : "") + window.location.hash;
+          window.history.replaceState(null, "", clean);
+        }
+      } catch (_) { /* old browser — leave URL as-is */ }
+    })();
+
+    // Escape closes any open HTMX dialog hosted in #dialog. Backdrop clicks
+    // are handled per-template (each dialog wraps itself in a click-to-close
+    // backdrop), but a keyboard shortcut is universal.
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "Escape") return;
+      var d = document.getElementById("dialog");
+      if (d && d.firstElementChild) d.innerHTML = "";
+    });
+  </script>
   <script>
     // Markdown renderer for chat bubbles.
     //
@@ -289,7 +330,7 @@
       });
     })();
   </script>
-  <footer class="storm-container" style="padding-top:8px;padding-bottom:90px;color:var(--text-dim);font-size:0.6rem;text-align:center;opacity:0.3;pointer-events:none;user-select:none">
+  <footer class="storm-container storm-footer">
     Local dashboard{{if .Version}} · {{.Version}}{{end}}
   </footer>
   <script>
@@ -359,7 +400,7 @@
         if (dock) return dock;
         dock = document.createElement("div");
         dock.id = "devinmgr-toasts";
-        dock.style.cssText = "position:fixed;right:1rem;bottom:1rem;z-index:60;display:flex;flex-direction:column;gap:.5rem;max-width:22rem;";
+        dock.style.cssText = "position:fixed;right:1rem;bottom:90px;z-index:60;display:flex;flex-direction:column;gap:.5rem;max-width:22rem;";
         document.body.appendChild(dock);
         return dock;
       }
@@ -422,6 +463,17 @@
         }
       }
 
+      // Ad-hoc toast helper for HTMX hx-on::after-request handlers and other
+      // inline page scripts. Renders a small auto-dismiss bubble into the
+      // same dock as the SSE notifications.
+      window.devinmgrToast = function (text, kind) {
+        renderInlineToast({
+          id: "adhoc-" + Date.now(),
+          title: kind === "err" ? "Error" : kind === "ok" ? "Done" : "Status",
+          body: text || "",
+        });
+      };
+
       async function poll() {
         try {
           const after = Number(localStorage.getItem(STORAGE_KEY) || "0");
@@ -468,6 +520,22 @@
           };
           const es = new EventSource("/events/stream");
           window.devinmgr._es = es;
+          // SSE liveness indicator in the topbar. Closed/reconnecting state
+          // is signalled with a yellow dotted glyph; reopened reverts.
+          const sseStatus = document.getElementById("sse-status");
+          function setSseStatus(state) {
+            if (!sseStatus) return;
+            if (state === "open") {
+              sseStatus.textContent = "○ live";
+              sseStatus.style.color = "";
+              sseStatus.title = "Live event stream connected";
+            } else if (state === "reconnecting") {
+              sseStatus.textContent = "◌ reconnecting";
+              sseStatus.style.color = "var(--yellow-bright)";
+              sseStatus.title = "Live event stream is reconnecting";
+            }
+          }
+          es.onopen = () => setSseStatus("open");
           // For each well-known event kind register a typed handler. We
           // could addEventListener('message', …) but the typed form maps
           // 1:1 to the bus's Kind constants in internal/events.
@@ -498,7 +566,8 @@
             });
           });
           es.onerror = () => {
-            // Browser auto-reconnects after `retry:` (3s). Nothing to do.
+            // Browser auto-reconnects after `retry:` (3s); reflect that.
+            setSseStatus("reconnecting");
           };
         }
       } catch (_) { /* old browser — polling continues to work */ }

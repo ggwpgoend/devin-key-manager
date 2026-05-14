@@ -136,6 +136,11 @@ type StartTaskResult struct {
 // package just to check this error.
 var ErrNoActiveKey = keys.ErrNoActiveKey
 
+// ErrPromptRequired is returned by StartTask when the caller supplied no
+// non-whitespace prompt. HTTP handlers translate this into a user-facing
+// validation message rather than leaking the raw "manager: ..." string.
+var ErrPromptRequired = errors.New("prompt is required")
+
 // StartTask is the top-level "submit prompt" workflow. It picks an active key,
 // creates a Devin session, persists the local task/session rows, seeds the
 // local conversation cache with the user prompt, and returns everything the
@@ -148,7 +153,7 @@ func (m *Manager) StartTask(ctx context.Context, in StartTaskInput) (StartTaskRe
 	in.Title = strings.TrimSpace(in.Title)
 	in.Prompt = strings.TrimSpace(in.Prompt)
 	if in.Prompt == "" {
-		return StartTaskResult{}, errors.New("manager: prompt is required")
+		return StartTaskResult{}, ErrPromptRequired
 	}
 	if in.Title == "" {
 		in.Title = deriveTitle(in.Prompt)
@@ -321,7 +326,7 @@ func (m *Manager) SyncSession(ctx context.Context, sessionID string) error {
 		cached = append(cached, sessions.Message{
 			SessionID: sessionID,
 			Role:      roleFromDevinType(msg.Type),
-			Content:   msg.Message,
+			Content:   stripAttachmentMarkers(msg.Message),
 			Timestamp: msg.Timestamp,
 		})
 	}
@@ -375,15 +380,50 @@ func (m *Manager) extractAndEnqueueArtifacts(ctx context.Context, sess sessions.
 
 // roleFromDevinType maps a Devin message-type string to a local Role.
 // Unrecognised types fall back to "system" so the UI can still display them.
+//
+// Devin's API has emitted several aliases for the user side over time —
+// notably "initial_user_message" for the seeded prompt that opens a session.
+// Treating that as a system message hid the user's first turn from the UI,
+// so all of these get folded into RoleUser.
 func roleFromDevinType(t string) sessions.Role {
 	switch strings.ToLower(t) {
-	case "user_message":
+	case "user_message", "initial_user_message", "user", "prompt":
 		return sessions.RoleUser
-	case "devin_message", "agent_message", "assistant_message":
+	case "devin_message", "agent_message", "assistant_message", "assistant":
 		return sessions.RoleAssistant
 	default:
 		return sessions.RoleSystem
 	}
+}
+
+// stripAttachmentMarkers removes Devin's machine-readable ATTACHMENT:{...}
+// envelope lines from message bodies before we surface them in the UI. The
+// markers are an internal protocol used to enqueue artifact downloads (see
+// artifacts.ExtractURLs); they have no value to a human reader and make chat
+// bubbles look broken when the JSON leaks through.
+//
+// The implementation is intentionally conservative: we drop any *line* whose
+// first non-whitespace token is "ATTACHMENT:{". Multi-line JSON envelopes
+// would survive trimming today; if Devin ever starts emitting them we will
+// extend this here rather than upstream.
+func stripAttachmentMarkers(s string) string {
+	if s == "" || !strings.Contains(s, "ATTACHMENT:{") {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		if strings.HasPrefix(strings.TrimSpace(ln), "ATTACHMENT:{") {
+			continue
+		}
+		out = append(out, ln)
+	}
+	// Collapse runs of blank lines that the strip introduced.
+	joined := strings.Join(out, "\n")
+	for strings.Contains(joined, "\n\n\n") {
+		joined = strings.ReplaceAll(joined, "\n\n\n", "\n\n")
+	}
+	return strings.TrimSpace(joined)
 }
 
 // statusFromDevin maps a remote status string to our local Status enum.

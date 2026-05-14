@@ -718,6 +718,8 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		msg := err.Error()
 		switch {
+		case errors.Is(err, manager.ErrPromptRequired):
+			msg = "Prompt is required."
 		case errors.Is(err, manager.ErrNoActiveKey):
 			msg = "No active keys available. Add one on the Keys page first."
 		case errors.Is(err, devin.ErrQuotaExhausted):

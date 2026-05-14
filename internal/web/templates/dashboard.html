@@ -5,10 +5,11 @@
     <p class="storm-sub">Live overview of keys, tasks, sessions. Sticky tiles auto-update via SSE.</p>
   </div>
   <div class="s-flex-row">
-    <a href="/tasks/new" class="s-btn s-btn-primary" hx-get="/tasks/new" hx-target="body" hx-swap="beforeend">+ New task</a>
+    <a href="/tasks/new" class="s-btn s-btn-primary" hx-get="/tasks/new" hx-target="#dialog" hx-swap="innerHTML">+ New task</a>
     <a href="/keys" class="s-btn s-btn-ghost">Manage keys</a>
   </div>
 </header>
+<div id="dialog"></div>
 
 <!-- Top-level KPIs -->
 <section class="s-bento">
@@ -34,7 +35,7 @@
   </div>
 </section>
 
-<div style="display:grid;grid-template-columns:1.4fr 1fr;gap:14px;margin-bottom:24px" class="dashboard-split">
+<div class="dashboard-split">
   <!-- Recent tasks -->
   <div class="s-card">
     <div class="s-flex-row" style="margin-bottom:14px">
@@ -98,12 +99,24 @@
     if (!window.devinmgr || !window.devinmgr.onEvent) return;
     var feed = document.getElementById("live-feed");
     var seen = 0;
-    function pushLine(text) {
+    function pushLine(badge, text, badgeStyle) {
       if (!feed) return;
       if (seen === 0) feed.innerHTML = "";
       var row = document.createElement("div");
       row.className = "s-flex-row";
-      row.innerHTML = '<span class="s-mono s-muted" style="font-size:0.66rem">' + new Date().toLocaleTimeString() + '</span><span>' + text + '</span>';
+      var ts = document.createElement("span");
+      ts.className = "s-mono s-muted";
+      ts.style.fontSize = "0.66rem";
+      ts.textContent = new Date().toLocaleTimeString();
+      var b = document.createElement("strong");
+      if (badgeStyle) b.style.color = badgeStyle;
+      b.textContent = badge;
+      var t = document.createElement("span");
+      // textContent: defangs any payload string from the bus.
+      t.textContent = " " + (text || "");
+      row.appendChild(ts);
+      row.appendChild(b);
+      row.appendChild(t);
       feed.insertBefore(row, feed.firstChild);
       while (feed.children.length > 15) feed.removeChild(feed.lastChild);
       seen++;
@@ -115,23 +128,29 @@
       if (isNaN(n)) n = 0;
       el.textContent = (n + 1).toString();
     }
+    var accent = "var(--accent-flash)";
     ["key.created","key.state_changed","key.deleted"].forEach(function (k) {
-      window.devinmgr.onEvent(k, function (ev) { pushLine("<strong style='color:var(--accent-flash)'>key</strong> " + (ev.kind || k).replace("key.","")); });
+      window.devinmgr.onEvent(k, function (ev) {
+        pushLine("key", (ev.kind || k).replace("key.",""), accent);
+      });
     });
     ["session.created","session.message_appended","session.closed"].forEach(function (k) {
       window.devinmgr.onEvent(k, function (ev) {
-        if (k === "session.created") { bump("sessions-24h"); pushLine("<strong style='color:var(--accent-flash)'>session</strong> opened"); }
-        else if (k === "session.message_appended") pushLine("<strong>msg</strong> " + (ev.data && ev.data.role || "?"));
+        if (k === "session.created") { bump("sessions-24h"); pushLine("session", "opened", accent); }
+        else if (k === "session.message_appended") pushLine("msg", (ev.data && ev.data.role) || "?");
       });
     });
     ["task.created","task.status_changed"].forEach(function (k) {
       window.devinmgr.onEvent(k, function (ev) {
-        if (k === "task.created") { bump("tasks-24h"); pushLine("<strong style='color:var(--accent-flash)'>task</strong> created"); }
-        else pushLine("<strong>task</strong> → " + (ev.data && ev.data.status || "?"));
+        if (k === "task.created") { bump("tasks-24h"); pushLine("task", "created", accent); }
+        else pushLine("task", "→ " + ((ev.data && ev.data.status) || "?"));
       });
     });
     ["artifact.ready","handoff.linked"].forEach(function (k) {
-      window.devinmgr.onEvent(k, function (ev) { pushLine("<strong>" + k.split(".")[0] + "</strong> " + (k.split(".")[1] || "")); });
+      window.devinmgr.onEvent(k, function () {
+        var parts = k.split(".");
+        pushLine(parts[0], parts[1] || "");
+      });
     });
   })();
 </script>
