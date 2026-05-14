@@ -1,5 +1,5 @@
 {{define "layout"}}<!doctype html>
-<html lang="en" class="h-full bg-slate-950 text-slate-100">
+<html lang="en" class="h-full">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -13,8 +13,38 @@
   <script src="/static/vendor/marked.min.js?v={{.Version}}" defer></script>
   <link rel="stylesheet" href="/static/vendor/atom-one-dark.min.css?v={{.Version}}">
   <script src="/static/vendor/highlight.min.js?v={{.Version}}" defer></script>
+  <!-- Storm UI palette (PR-11): bento + dock + dark-blue typography.
+       Loaded after Tailwind so storm classes win specificity ties. -->
+  <link rel="stylesheet" href="/static/storm.css?v={{.Version}}">
   <style>
-    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    /* Tailwind palette overrides — retint the slate ramp to storm tones.
+       The existing templates still use slate-* utilities; this remap lets
+       them inherit the storm aesthetic without rewriting every class. */
+    .bg-slate-950 { background-color: var(--bg) !important; }
+    .bg-slate-900 { background-color: var(--surface-solid) !important; }
+    .bg-slate-900\/60 { background-color: rgba(16,21,30,0.7) !important; }
+    .bg-slate-900\/40 { background-color: rgba(16,21,30,0.5) !important; }
+    .bg-slate-800 { background-color: var(--surface-2) !important; }
+    .bg-slate-800\/60 { background-color: rgba(21,28,40,0.6) !important; }
+    .border-slate-800 { border-color: var(--border) !important; }
+    .border-slate-700 { border-color: var(--border-h) !important; }
+    .divide-slate-800 > * + * { border-color: var(--border) !important; }
+    .text-slate-100 { color: var(--white) !important; }
+    .text-slate-200 { color: var(--text-h) !important; }
+    .text-slate-300 { color: var(--text-h) !important; }
+    .text-slate-400 { color: var(--text) !important; }
+    .text-slate-500 { color: var(--text-dim) !important; }
+    .text-slate-600 { color: var(--text-dim) !important; }
+    .text-slate-700 { color: rgba(74,85,104,0.6) !important; }
+    /* Indigo accents (used for primary actions) → storm accent. */
+    .text-indigo-300, .text-indigo-400 { color: var(--accent-flash) !important; }
+    .hover\:text-indigo-300:hover { color: var(--accent-flash) !important; }
+    .bg-indigo-500 { background-color: var(--accent) !important; }
+    .bg-indigo-500\/15 { background-color: rgba(74,122,155,0.15) !important; }
+    .border-indigo-500 { border-color: var(--accent) !important; }
+
+    body { font-family: var(--font-body); background: var(--bg); color: var(--text-h); }
+    html, body { min-height: 100vh; }
     .pill { @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium; }
     /* Markdown body styling — keeps Devin's prose readable without overpowering
        the chat bubble layout. */
@@ -73,24 +103,45 @@
   </style>
 </head>
 <body class="min-h-full">
-  <header class="border-b border-slate-800 bg-slate-900/60 backdrop-blur">
-    <div class="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-      <div class="flex items-center gap-3">
-        <span class="text-lg font-semibold tracking-tight">devin-key-manager</span>
-        <span class="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">{{.Version}}</span>
-      </div>
-      <nav class="flex items-center gap-4 text-sm">
-        <a href="/keys" class="{{if eq .Active "keys"}}text-white{{else}}text-slate-400 hover:text-white{{end}}">Keys</a>
-        <a href="/tasks" class="{{if eq .Active "tasks"}}text-white{{else}}text-slate-400 hover:text-white{{end}}">Tasks</a>
-        <a href="/schedules" class="{{if eq .Active "schedules"}}text-white{{else}}text-slate-400 hover:text-white{{end}}">Schedules</a>
-        <span class="{{if eq .Active "sessions"}}text-white{{else}}text-slate-700{{end}}">Sessions</span>
-      </nav>
-      <div id="notif-bell" class="flex items-center gap-2 text-xs text-slate-400"></div>
+  <!-- Storm topbar: minimal sticky header. Title + version + notif bell. -->
+  <div class="s-topbar">
+    <div class="s-topbar-brand">
+      <span class="s-brand-mark">K</span>
+      <span>devin-key-manager</span>
+      <span class="s-version-chip">{{.Version}}</span>
     </div>
-  </header>
-  <main class="mx-auto max-w-6xl px-6 py-8">
+    <div class="s-topbar-meta">
+      <span id="sse-status" class="s-muted" title="Live event stream status">○ live</span>
+      <div id="notif-bell"></div>
+    </div>
+  </div>
+
+  <main class="storm-container">
     {{template "content" .}}
   </main>
+
+  <!-- Floating dock: primary navigation. Mirrors the storm prototype. -->
+  <nav class="dock" aria-label="Primary">
+    <a href="/" class="dock-item{{if eq .Active "dashboard"}} active{{end}}" title="Dashboard">
+      <span class="dock-tooltip">Dashboard</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+    </a>
+    <a href="/tasks" class="dock-item{{if eq .Active "tasks"}} active{{end}}" title="Tasks">
+      <span class="dock-tooltip">Tasks</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+    </a>
+    <a href="/keys" class="dock-item{{if eq .Active "keys"}} active{{end}}" title="Keys">
+      <span class="dock-tooltip">Keys</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+    </a>
+    <a href="/schedules" class="dock-item{{if eq .Active "schedules"}} active{{end}}" title="Schedules">
+      <span class="dock-tooltip">Schedules</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+    </a>
+  </nav>
+
+  <!-- Toast container for live SSE notifications. -->
+  <div id="s-toast-container" aria-live="polite"></div>
   <script>
     // Markdown renderer for chat bubbles.
     //
@@ -199,8 +250,9 @@
       });
     })();
   </script>
-  <footer class="mx-auto max-w-6xl px-6 pb-8 pt-12 text-xs text-slate-500">
-    Local dashboard — listening on this machine only. Master key file: <code class="rounded bg-slate-900 px-1.5 py-0.5">{{.MasterKeyPath}}</code>
+  <footer class="storm-container" style="padding-top:0;padding-bottom:90px;color:var(--text-dim);font-size:0.7rem">
+    Local dashboard — listening on this machine only. Master key file:
+    <code class="s-mono">{{.MasterKeyPath}}</code>
   </footer>
   <script>
     // PR-8: lightweight browser-notification poller. We hit /events/since

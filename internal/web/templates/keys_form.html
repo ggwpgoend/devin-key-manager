@@ -58,6 +58,15 @@
       {{end}}
 
       <div>
+        <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Tags</label>
+        <input type="text" name="tags"
+               value="{{if .Editing}}{{.Key.Tags}}{{end}}"
+               placeholder="work, trial-batch-2025, personal"
+               class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none" />
+        <p class="mt-1 text-xs text-slate-500">Comma-separated labels for grouping &amp; filtering.</p>
+      </div>
+
+      <div>
         <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Notes</label>
         <textarea name="notes" rows="2"
                   class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none">{{if .Editing}}{{.Key.Notes}}{{end}}</textarea>

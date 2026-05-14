@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ggwpgoend/devin-key-manager/internal/artifacts"
+	"github.com/ggwpgoend/devin-key-manager/internal/attachments"
 	"github.com/ggwpgoend/devin-key-manager/internal/config"
 	"github.com/ggwpgoend/devin-key-manager/internal/crypto"
 	"github.com/ggwpgoend/devin-key-manager/internal/events"
@@ -78,6 +79,7 @@ func run() error {
 	artifactsRepo := artifacts.NewRepo(db)
 	schedulesRepo := schedules.NewRepo(db)
 	notificationsRepo := notifications.NewRepo(db)
+	attachmentsRepo := attachments.NewRepo(db, nil)
 
 	// The downloader needs a BearerProvider. We create the manager first
 	// with a nil downloader, then wire the downloader after the manager
@@ -152,6 +154,7 @@ func run() error {
 		Manager:       mgr,
 		Schedules:     schedulesRepo,
 		Notifications: notificationsRepo,
+		Attachments:   attachmentsRepo,
 		Bus:           bus,
 	}, cfg.MasterKeyPath)
 	if err != nil {

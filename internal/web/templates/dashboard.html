@@ -1,0 +1,138 @@
+{{define "content"}}
+<header class="storm-header">
+  <div>
+    <h1 class="storm-title">your <span>storm</span> dashboard</h1>
+    <p class="storm-sub">Live overview of keys, tasks, sessions. Sticky tiles auto-update via SSE.</p>
+  </div>
+  <div class="s-flex-row">
+    <a href="/tasks/new" class="s-btn s-btn-primary" hx-get="/tasks/new" hx-target="body" hx-swap="beforeend">+ New task</a>
+    <a href="/keys" class="s-btn s-btn-ghost">Manage keys</a>
+  </div>
+</header>
+
+<!-- Top-level KPIs -->
+<section class="s-bento">
+  <div class="s-card">
+    <div class="s-stat-label">Active keys</div>
+    <div class="s-stat-val-lg" data-stat="keys-active">{{.Stats.KeysActive}}</div>
+    <div class="s-stat-trend flat">{{.Stats.KeysTotal}} total · {{.Stats.KeysCooldown}} cooldown · {{.Stats.KeysDead}} dead</div>
+  </div>
+  <div class="s-card">
+    <div class="s-stat-label">Tasks (24h)</div>
+    <div class="s-stat-val-lg" data-stat="tasks-24h">{{.Stats.TasksLast24h}}</div>
+    <div class="s-stat-trend flat">{{.Stats.TasksRunning}} running · {{.Stats.TasksDone}} done</div>
+  </div>
+  <div class="s-card">
+    <div class="s-stat-label">Sessions (24h)</div>
+    <div class="s-stat-val-lg" data-stat="sessions-24h">{{.Stats.SessionsLast24h}}</div>
+    <div class="s-stat-trend flat">{{.Stats.SessionsOpen}} open · {{.Stats.SessionsClosed}} closed</div>
+  </div>
+  <div class="s-card">
+    <div class="s-stat-label">Requests total</div>
+    <div class="s-stat-val-lg" data-stat="requests-total">{{.Stats.RequestsTotal}}</div>
+    <div class="s-stat-trend flat">across all keys</div>
+  </div>
+</section>
+
+<div style="display:grid;grid-template-columns:1.4fr 1fr;gap:14px;margin-bottom:24px" class="dashboard-split">
+  <!-- Recent tasks -->
+  <div class="s-card">
+    <div class="s-flex-row" style="margin-bottom:14px">
+      <div class="s-section-label" style="margin:0">Recent tasks</div>
+      <span class="s-spacer"></span>
+      <a href="/tasks" class="s-link s-mono" style="font-size:0.7rem">view all →</a>
+    </div>
+    {{if .RecentTasks}}
+    <div class="s-flex-col">
+      {{range .RecentTasks}}
+      <a href="/tasks/{{.ID}}" class="s-card" style="padding:11px 14px;background:rgba(9,12,16,0.4);text-decoration:none;display:flex;align-items:center;gap:10px">
+        <span class="s-pill s-pill-{{if eq .Status "running"}}run{{else if eq .Status "completed"}}ok{{else if eq .Status "failed"}}err{{else}}wait{{end}}">{{.Status}}</span>
+        <span style="color:var(--text-h);font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{.Title}}</span>
+        <span class="s-mono s-muted" style="font-size:0.68rem">{{.CreatedAt.Format "Jan 2 15:04"}}</span>
+      </a>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="s-muted" style="font-size:0.78rem">No tasks yet. Click +New task to start.</p>
+    {{end}}
+  </div>
+
+  <!-- Key snapshot -->
+  <div class="s-card">
+    <div class="s-flex-row" style="margin-bottom:14px">
+      <div class="s-section-label" style="margin:0">Key pool</div>
+      <span class="s-spacer"></span>
+      <a href="/keys" class="s-link s-mono" style="font-size:0.7rem">manage →</a>
+    </div>
+    {{if .KeyRollup}}
+    <div class="s-flex-col" style="gap:8px">
+      {{range .KeyRollup}}
+      <div class="s-flex-row" style="font-size:0.78rem">
+        <span class="s-pill s-pill-{{.PillClass}}">{{.Plan}}</span>
+        <span style="color:var(--text-h)">{{.Count}}</span>
+        <span class="s-spacer"></span>
+        <span class="s-mono s-muted">{{.Requests}} req</span>
+      </div>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="s-muted" style="font-size:0.78rem">No keys yet. <a href="/keys" class="s-link">Add one →</a></p>
+    {{end}}
+  </div>
+</div>
+
+<!-- Live activity stream (SSE-fed). -->
+<div class="s-section-label">Live activity</div>
+<div class="s-card" style="min-height:120px">
+  <div id="live-feed" class="s-flex-col" style="gap:6px;font-size:0.78rem;color:var(--text)">
+    <span class="s-muted">Waiting for events… (key changes, sessions, artifacts)</span>
+  </div>
+  <div class="s-dither"></div>
+</div>
+
+<script>
+  // Bind dashboard tiles to the live SSE event bus. We don't refetch the
+  // page; instead we patch the visible numbers when relevant events come
+  // through. This makes the dashboard feel "live" without polling.
+  (function () {
+    if (!window.devinmgr || !window.devinmgr.onEvent) return;
+    var feed = document.getElementById("live-feed");
+    var seen = 0;
+    function pushLine(text) {
+      if (!feed) return;
+      if (seen === 0) feed.innerHTML = "";
+      var row = document.createElement("div");
+      row.className = "s-flex-row";
+      row.innerHTML = '<span class="s-mono s-muted" style="font-size:0.66rem">' + new Date().toLocaleTimeString() + '</span><span>' + text + '</span>';
+      feed.insertBefore(row, feed.firstChild);
+      while (feed.children.length > 15) feed.removeChild(feed.lastChild);
+      seen++;
+    }
+    function bump(selector) {
+      var el = document.querySelector('[data-stat="' + selector + '"]');
+      if (!el) return;
+      var n = parseInt(el.textContent || "0", 10);
+      if (isNaN(n)) n = 0;
+      el.textContent = (n + 1).toString();
+    }
+    ["key.created","key.state_changed","key.deleted"].forEach(function (k) {
+      window.devinmgr.onEvent(k, function (ev) { pushLine("<strong style='color:var(--accent-flash)'>key</strong> " + (ev.kind || k).replace("key.","")); });
+    });
+    ["session.created","session.message_appended","session.closed"].forEach(function (k) {
+      window.devinmgr.onEvent(k, function (ev) {
+        if (k === "session.created") { bump("sessions-24h"); pushLine("<strong style='color:var(--accent-flash)'>session</strong> opened"); }
+        else if (k === "session.message_appended") pushLine("<strong>msg</strong> " + (ev.data && ev.data.role || "?"));
+      });
+    });
+    ["task.created","task.status_changed"].forEach(function (k) {
+      window.devinmgr.onEvent(k, function (ev) {
+        if (k === "task.created") { bump("tasks-24h"); pushLine("<strong style='color:var(--accent-flash)'>task</strong> created"); }
+        else pushLine("<strong>task</strong> → " + (ev.data && ev.data.status || "?"));
+      });
+    });
+    ["artifact.ready","handoff.linked"].forEach(function (k) {
+      window.devinmgr.onEvent(k, function (ev) { pushLine("<strong>" + k.split(".")[0] + "</strong> " + (k.split(".")[1] || "")); });
+    });
+  })();
+</script>
+{{end}}

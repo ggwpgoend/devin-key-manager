@@ -23,6 +23,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/ggwpgoend/devin-key-manager/internal/artifacts"
+	"github.com/ggwpgoend/devin-key-manager/internal/attachments"
 	"github.com/ggwpgoend/devin-key-manager/internal/devin"
 	"github.com/ggwpgoend/devin-key-manager/internal/events"
 	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
@@ -38,7 +39,7 @@ import (
 //go:embed templates/*.html
 var templatesFS embed.FS
 
-//go:embed static/vendor/*
+//go:embed static/vendor/* static/storm.css
 var staticFS embed.FS
 
 // staticVersion is appended as a ?v= query param to vendored asset URLs so
@@ -56,6 +57,7 @@ type Server struct {
 	artifacts     *artifacts.Repo
 	schedules     *schedules.Repo
 	notifs        *notifications.Repo
+	attachments   *attachments.Repo
 	bus           *events.Bus
 	manager       *manager.Manager
 	pages         map[string]*template.Template
@@ -103,6 +105,7 @@ type Deps struct {
 	Artifacts     *artifacts.Repo
 	Schedules     *schedules.Repo
 	Notifications *notifications.Repo
+	Attachments   *attachments.Repo
 	Bus           *events.Bus
 	Manager       *manager.Manager
 }
@@ -153,6 +156,7 @@ func NewServer(logger *slog.Logger, deps Deps, masterKeyPath string) (*Server, e
 		artifacts:     deps.Artifacts,
 		schedules:     deps.Schedules,
 		notifs:        deps.Notifications,
+		attachments:   deps.Attachments,
 		bus:           deps.Bus,
 		manager:       deps.Manager,
 		pages:         pages,
@@ -170,9 +174,8 @@ func (s *Server) Handler() http.Handler {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Compress(5))
 
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/tasks", http.StatusFound)
-	})
+	// PR-11: dashboard is the new root. Bento layout with live KPIs.
+	r.Get("/", s.handleDashboard)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -188,10 +191,15 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/detect", s.handleKeysDetectPlan)
 		r.Get("/dialog/close", s.handleKeysDialogClose)
 		r.Post("/check-all", s.handleKeysCheckAll)
+		// PR-12: bulk delete (A4). POST /keys/bulk-delete with id=... params.
+		// Add ?dry_run=1 to preview affected rows without committing.
+		r.Post("/bulk-delete", s.handleKeysBulkDelete)
 		r.Get("/{id}/edit", s.handleKeysEditDialog)
 		r.Put("/{id}", s.handleKeysUpdate)
 		r.Delete("/{id}", s.handleKeysDelete)
 		r.Post("/{id}/check", s.handleKeysCheck)
+		// PR-12: tags (A3). PUT /keys/{id}/tags with tags=tag1,tag2,...
+		r.Put("/{id}/tags", s.handleKeysSetTags)
 	})
 
 	r.Route("/tasks", func(r chi.Router) {
@@ -213,7 +221,26 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/{id}/files.zip", s.handleSessionFilesZip)
 		r.Post("/{id}/files/open", s.handleSessionFilesOpen)
 		r.Post("/{id}/notes", s.handleSessionNotes)
+		// PR-12: chat search (C29). GET /sessions/{id}/search?q=...
+		r.Get("/{id}/search", s.handleSessionSearch)
+		// PR-12: continue from stopped (C30). POST /sessions/{id}/continue
+		// re-sends "continue" to the Devin session.
+		r.Post("/{id}/continue", s.handleSessionContinue)
+		// PR-12: file upload (C26). multipart POST with a single "file" part.
+		r.Post("/{id}/attachments", s.handleSessionAttach)
+		r.Get("/{id}/attachments", s.handleSessionAttachmentsList)
+		// PR-12: fork/checkpoint (B14). Optional anchor_id=<message-id>.
+		r.Post("/{id}/fork", s.handleSessionFork)
 	})
+
+	// PR-12: pin/unpin messages (C22).
+	r.Route("/messages", func(r chi.Router) {
+		r.Post("/{id}/pin", s.handleMessagePin)
+		r.Post("/{id}/unpin", s.handleMessageUnpin)
+	})
+
+	// PR-12: cross-session search (FTS5). GET /search?q=...
+	r.Get("/search", s.handleGlobalSearch)
 
 	r.Route("/artifacts", func(r chi.Router) {
 		r.Get("/{id}/raw", s.handleArtifactRaw)
@@ -249,6 +276,9 @@ func (s *Server) Handler() http.Handler {
 	// ?v=<version> bust token wired in layout.html. Anything that wants to
 	// override one of these can drop a file at the same path in /static/.
 	r.Get("/static/vendor/*", s.handleStaticVendor)
+	// PR-11: storm.css palette/components served the same way; also a
+	// general fallthrough for any future /static/<name>.css we add.
+	r.Get("/static/{name}", s.handleStaticTop)
 
 	return r
 }
@@ -262,23 +292,34 @@ func (s *Server) handleStaticVendor(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	path := "static/vendor/" + tail
-	data, err := staticFS.ReadFile(path)
-	if err != nil {
+	serveStatic(w, "static/vendor/"+tail, tail)
+}
+
+func (s *Server) handleStaticTop(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if name == "" || strings.Contains(name, "..") || strings.Contains(name, "/") {
 		http.NotFound(w, r)
 		return
 	}
+	serveStatic(w, "static/"+name, name)
+}
+
+func serveStatic(w http.ResponseWriter, fsPath, name string) {
+	data, err := staticFS.ReadFile(fsPath)
+	if err != nil {
+		http.NotFound(w, nil)
+		return
+	}
 	switch {
-	case strings.HasSuffix(tail, ".js"):
+	case strings.HasSuffix(name, ".js"):
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-	case strings.HasSuffix(tail, ".css"):
+	case strings.HasSuffix(name, ".css"):
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	case strings.HasSuffix(tail, ".woff2"):
+	case strings.HasSuffix(name, ".woff2"):
 		w.Header().Set("Content-Type", "font/woff2")
-	case strings.HasSuffix(tail, ".svg"):
+	case strings.HasSuffix(name, ".svg"):
 		w.Header().Set("Content-Type", "image/svg+xml")
 	}
-	// Vendor assets are content-addressed via ?v= so we can cache for a year.
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	_, _ = w.Write(data)
 }
@@ -351,6 +392,7 @@ func (s *Server) handleKeysCreate(w http.ResponseWriter, r *http.Request) {
 		Plan:   plan,
 		APIKey: apiKey,
 		Notes:  r.PostFormValue("notes"),
+		Tags:   splitTagsInput(r.PostFormValue("tags")),
 	}
 	if _, err := s.keys.Create(r.Context(), in); err != nil {
 		if errors.Is(err, keys.ErrDuplicateKey) {
@@ -447,6 +489,7 @@ func (s *Server) handleKeysUpdate(w http.ResponseWriter, r *http.Request) {
 		Label: r.PostFormValue("label"),
 		Plan:  keys.Plan(strings.TrimSpace(r.PostFormValue("plan"))),
 		Notes: r.PostFormValue("notes"),
+		Tags:  splitTagsInput(r.PostFormValue("tags")),
 	}
 	if err := s.keys.Update(r.Context(), id, in); err != nil {
 		if errors.Is(err, keys.ErrNotFound) {
@@ -529,6 +572,24 @@ func summariseCheckResults(results []manager.CheckResult) string {
 
 func urlEncode(s string) string {
 	return url.QueryEscape(s)
+}
+
+// splitTagsInput parses a comma-separated form input ("work, beta, foo")
+// into a clean []string. NormalizeTags() runs on the repo side, so this
+// only handles the raw form decoding.
+func splitTagsInput(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // --- /tasks handlers ---
@@ -1259,6 +1320,34 @@ type pageData struct {
 	// server, which can be UTC in headless setups.
 	ServerTime string
 	ServerTZ   string
+
+	// Dashboard (PR-11).
+	Stats       dashStats
+	RecentTasks []tasks.Task
+	KeyRollup   []keyRollup
+}
+
+// dashStats is the bento KPI bundle for the dashboard.
+type dashStats struct {
+	KeysActive      int
+	KeysTotal       int
+	KeysCooldown    int
+	KeysDead        int
+	TasksLast24h    int
+	TasksRunning    int
+	TasksDone       int
+	SessionsLast24h int
+	SessionsOpen    int
+	SessionsClosed  int
+	RequestsTotal   int64
+}
+
+// keyRollup is one row in the dashboard's key-pool tile (per plan).
+type keyRollup struct {
+	Plan      string
+	Count     int
+	Requests  int64
+	PillClass string
 }
 
 // scheduleFormData carries the pre-filled values for the schedules creation
