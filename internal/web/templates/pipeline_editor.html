@@ -78,12 +78,21 @@
 <script id="pl-bootstrap-graph" type="application/json">{{.GraphJSON}}</script>
 <script id="pl-bootstrap-runs"  type="application/json">{{.RunsJSON}}</script>
 <script>
-(function(){
+(function init(){
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+    return;
+  }
   const pipelineId = "{{.PipelineRow.ID}}";
   const graphEl = document.getElementById('pl-bootstrap-graph');
   const runsEl  = document.getElementById('pl-bootstrap-runs');
-  const state = JSON.parse(graphEl.textContent || '{"nodes":[],"edges":[]}');
-  let runs = JSON.parse(runsEl.textContent || '[]');
+  function safeParse(raw, fallback) {
+    var v = JSON.parse(raw || JSON.stringify(fallback));
+    if (typeof v === 'string') v = JSON.parse(v);
+    return v;
+  }
+  const state = safeParse(graphEl.textContent, {nodes:[],edges:[]});
+  let runs = safeParse(runsEl.textContent, []);
   const $nodes = document.getElementById('pl-nodes');
   const $edges = document.getElementById('pl-edges');
   const $insp  = document.getElementById('pl-inspector');

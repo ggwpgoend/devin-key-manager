@@ -258,9 +258,8 @@
       });
     })();
   </script>
-  <footer class="storm-container" style="padding-top:0;padding-bottom:90px;color:var(--text-dim);font-size:0.7rem">
-    Local dashboard — listening on this machine only. Master key file:
-    <code class="s-mono">{{.MasterKeyPath}}</code>
+  <footer class="storm-container" style="padding-top:12px;padding-bottom:90px;color:var(--text-dim);font-size:0.65rem;text-align:center;opacity:0.5;pointer-events:none">
+    Local dashboard · {{.MasterKeyPath}}
   </footer>
   <script>
     // PR-8: lightweight browser-notification poller. We hit /events/since

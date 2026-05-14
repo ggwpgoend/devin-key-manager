@@ -5,7 +5,7 @@
 // API. The manager URL is configurable via storage (default
 // http://localhost:5179) so multi-port setups work without rebuilding.
 
-const DEFAULT_BASE = "http://localhost:5179";
+const DEFAULT_BASE = "http://localhost:8765";
 
 async function getBaseURL() {
   return new Promise(resolve => {

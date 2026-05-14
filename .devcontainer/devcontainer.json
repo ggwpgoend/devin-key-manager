@@ -1,0 +1,17 @@
+{
+  "name": "devin-key-manager",
+  "image": "mcr.microsoft.com/devcontainers/go:1-1.24-bookworm",
+  "features": {},
+  "forwardPorts": [8765],
+  "postCreateCommand": "go build -o devinmgr ./cmd/devinmgr",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go"
+      ],
+      "settings": {
+        "go.toolsManagement.autoUpdate": true
+      }
+    }
+  }
+}
