@@ -1,0 +1,444 @@
+{{define "content"}}
+<section class="space-y-4">
+  <header class="flex items-center justify-between gap-4">
+    <div class="flex-1">
+      <h1 class="text-xl font-semibold tracking-tight">{{.PipelineRow.Name}}</h1>
+      <p class="text-xs text-slate-500 font-mono">v{{.PipelineRow.Version}} · {{.PipelineRow.ID}}</p>
+      {{if .PipelineRow.Description}}<p class="text-sm text-slate-400 mt-1">{{.PipelineRow.Description}}</p>{{end}}
+    </div>
+    <div class="flex gap-2">
+      <a href="/pipelines" class="rounded border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800">&larr; All pipelines</a>
+      <button id="pl-save" class="rounded bg-indigo-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-400">Save</button>
+      <button id="pl-run" class="rounded bg-emerald-500 px-3 py-1.5 text-sm font-medium text-slate-900 hover:bg-emerald-400">Run</button>
+    </div>
+  </header>
+
+  <div class="grid grid-cols-12 gap-4">
+    <!-- Node palette -->
+    <aside class="col-span-2 rounded-2xl border border-slate-800 bg-slate-900/40 p-3">
+      <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Add node</h2>
+      <ul class="mt-2 space-y-1" id="pl-palette">
+        <li><button data-add="trigger"   class="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-left text-sm hover:bg-slate-800">▶ Trigger</button></li>
+        <li><button data-add="prompt"    class="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-left text-sm hover:bg-slate-800">✎ Prompt</button></li>
+        <li><button data-add="wait"      class="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-left text-sm hover:bg-slate-800">⏱ Wait</button></li>
+        <li><button data-add="condition" class="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-left text-sm hover:bg-slate-800">⇄ Condition</button></li>
+        <li><button data-add="handoff"   class="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-left text-sm hover:bg-slate-800">🔁 Handoff</button></li>
+        <li><button data-add="notify"    class="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-left text-sm hover:bg-slate-800">🔔 Notify</button></li>
+        <li><button data-add="end"       class="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-left text-sm hover:bg-slate-800">⏹ End</button></li>
+      </ul>
+
+      <h2 class="mt-4 text-xs font-semibold uppercase tracking-wider text-slate-400">Tips</h2>
+      <ul class="mt-2 list-disc pl-4 text-xs text-slate-400 space-y-1">
+        <li>Drag nodes to move.</li>
+        <li>Shift-click a node, then click another to draw an edge.</li>
+        <li>Click a node to edit its config in the right panel.</li>
+        <li>Save persists nodes + edges atomically and bumps version.</li>
+      </ul>
+    </aside>
+
+    <!-- Canvas -->
+    <div class="col-span-7 rounded-2xl border border-slate-800 bg-slate-900/40 p-2">
+      <div id="pl-canvas" class="relative w-full overflow-auto" style="height:580px;background:radial-gradient(circle at 1px 1px, rgba(255,255,255,.05) 1px, transparent 0) 0 0 / 24px 24px;border-radius:0.75rem;">
+        <svg id="pl-edges" style="position:absolute;inset:0;pointer-events:none;width:2400px;height:1600px;">
+          <defs>
+            <marker id="pl-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" />
+            </marker>
+          </defs>
+        </svg>
+        <div id="pl-nodes" style="position:relative;width:2400px;height:1600px;"></div>
+      </div>
+      <p class="mt-2 text-xs text-slate-500" id="pl-status">Ready.</p>
+    </div>
+
+    <!-- Inspector + runs -->
+    <aside class="col-span-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-3 space-y-4">
+      <section>
+        <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Inspector</h2>
+        <div id="pl-inspector" class="mt-2 text-sm text-slate-300">
+          <p class="text-slate-500">Select a node.</p>
+        </div>
+      </section>
+
+      <section>
+        <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Recent runs</h2>
+        <ul id="pl-runs" class="mt-2 space-y-1 text-xs"></ul>
+      </section>
+
+      <section id="pl-run-detail" class="hidden">
+        <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Run detail</h2>
+        <ol id="pl-steps" class="mt-2 space-y-1 text-xs font-mono"></ol>
+        <button id="pl-rollback" class="mt-3 rounded border border-amber-600/60 bg-amber-900/40 px-3 py-1.5 text-xs text-amber-200 hover:bg-amber-900/60">Rollback one step</button>
+        <p class="mt-2 text-[11px] text-slate-500">Rollback marks the last step as skipped and re-points the run to the previous node. Edit the graph then click Run again to retry.</p>
+      </section>
+    </aside>
+  </div>
+</section>
+
+<script id="pl-bootstrap-graph" type="application/json">{{.GraphJSON}}</script>
+<script id="pl-bootstrap-runs"  type="application/json">{{.RunsJSON}}</script>
+<script>
+(function(){
+  const pipelineId = "{{.PipelineRow.ID}}";
+  const graphEl = document.getElementById('pl-bootstrap-graph');
+  const runsEl  = document.getElementById('pl-bootstrap-runs');
+  const state = JSON.parse(graphEl.textContent || '{"nodes":[],"edges":[]}');
+  let runs = JSON.parse(runsEl.textContent || '[]');
+  const $nodes = document.getElementById('pl-nodes');
+  const $edges = document.getElementById('pl-edges');
+  const $insp  = document.getElementById('pl-inspector');
+  const $status= document.getElementById('pl-status');
+  const $runs  = document.getElementById('pl-runs');
+  const $rdet  = document.getElementById('pl-run-detail');
+  const $steps = document.getElementById('pl-steps');
+  const $rbBtn = document.getElementById('pl-rollback');
+  let selected = null;
+  let edgeFrom = null;
+  let drag = null;
+  let activeRunId = null;
+  let runPoll = null;
+
+  function uid(prefix){ return prefix + '-' + Math.random().toString(36).slice(2,9); }
+
+  function genNodeId(type){
+    // Stable per type, but with a random suffix to avoid collisions.
+    return type + '-' + Math.random().toString(36).slice(2,8);
+  }
+
+  function nodeBoxStyle(n){
+    const colors = {
+      trigger:   '#475569',
+      prompt:    '#4338ca',
+      wait:      '#0e7490',
+      condition: '#b45309',
+      handoff:   '#7c3aed',
+      notify:    '#0891b2',
+      end:       '#475569',
+    };
+    const bg = colors[n.type] || '#334155';
+    return 'position:absolute;left:'+(n.pos_x||0)+'px;top:'+(n.pos_y||0)+'px;'
+         + 'min-width:140px;background:'+bg+';color:white;'
+         + 'border:1px solid rgba(255,255,255,0.15);border-radius:8px;'
+         + 'padding:8px 10px;font-size:13px;cursor:move;user-select:none;'
+         + 'box-shadow:0 2px 8px rgba(0,0,0,0.35);';
+  }
+
+  function renderNodes(){
+    $nodes.innerHTML = '';
+    state.nodes.forEach(n => {
+      const el = document.createElement('div');
+      el.className = 'pl-node';
+      el.dataset.id = n.id;
+      el.style.cssText = nodeBoxStyle(n);
+      el.innerHTML = '<div style="font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em;opacity:.8;">'+escapeHTML(n.type)+'</div>'
+                  + '<div style="margin-top:2px;">'+escapeHTML(n.label || n.type)+'</div>';
+      el.addEventListener('mousedown', onNodeMouseDown);
+      el.addEventListener('click', onNodeClick);
+      $nodes.appendChild(el);
+    });
+    renderEdges();
+  }
+
+  function renderEdges(){
+    // Wipe existing path elements (preserve <defs>).
+    [...$edges.querySelectorAll('path.pl-edge, text.pl-edgelabel')].forEach(e => e.remove());
+    const idx = {};
+    state.nodes.forEach(n => idx[n.id] = n);
+    state.edges.forEach(e => {
+      const src = idx[e.source_id];
+      const dst = idx[e.target_id];
+      if (!src || !dst) return;
+      const x1 = (src.pos_x||0) + 70, y1 = (src.pos_y||0) + 50;
+      const x2 = (dst.pos_x||0) + 70, y2 = (dst.pos_y||0);
+      const dx = (x2 - x1) * 0.5;
+      const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+      path.setAttribute('class','pl-edge');
+      path.setAttribute('d', 'M '+x1+' '+y1+' C '+(x1+dx)+' '+y1+' '+(x2-dx)+' '+y2+' '+x2+' '+y2);
+      path.setAttribute('stroke', edgeColor(e.condition));
+      path.setAttribute('stroke-width','2');
+      path.setAttribute('fill','none');
+      path.setAttribute('marker-end','url(#pl-arrow)');
+      path.style.pointerEvents = 'stroke';
+      path.style.cursor = 'pointer';
+      path.addEventListener('click', () => onEdgeClick(e));
+      $edges.appendChild(path);
+      if (e.condition && e.condition !== 'default'){
+        const lbl = document.createElementNS('http://www.w3.org/2000/svg','text');
+        lbl.setAttribute('class','pl-edgelabel');
+        lbl.setAttribute('x', (x1+x2)/2);
+        lbl.setAttribute('y', (y1+y2)/2 - 6);
+        lbl.setAttribute('fill', '#cbd5e1');
+        lbl.setAttribute('font-size','11');
+        lbl.setAttribute('text-anchor','middle');
+        lbl.textContent = e.condition;
+        $edges.appendChild(lbl);
+      }
+    });
+  }
+
+  function edgeColor(cond){
+    if (cond === 'true')  return '#10b981';
+    if (cond === 'false') return '#ef4444';
+    return '#94a3b8';
+  }
+
+  function escapeHTML(s){
+    return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function onNodeMouseDown(ev){
+    if (ev.shiftKey) return;
+    const id = ev.currentTarget.dataset.id;
+    const n  = state.nodes.find(x => x.id === id);
+    if (!n) return;
+    drag = { id, offX: ev.clientX - (n.pos_x||0), offY: ev.clientY - (n.pos_y||0) };
+  }
+
+  function onNodeClick(ev){
+    const id = ev.currentTarget.dataset.id;
+    if (ev.shiftKey){
+      if (!edgeFrom) { edgeFrom = id; setStatus('Edge start: '+id+'. Click another node to finish.'); return; }
+      if (edgeFrom !== id){
+        const condition = (state.nodes.find(n => n.id === edgeFrom)?.type === 'condition') ? 'true' : 'default';
+        state.edges.push({ id: uid('edge'), source_id: edgeFrom, target_id: id, condition });
+        setStatus('Edge added.');
+        renderEdges();
+      }
+      edgeFrom = null;
+      return;
+    }
+    selected = id;
+    renderInspector();
+  }
+
+  function onEdgeClick(e){
+    selected = null;
+    renderEdgeInspector(e);
+  }
+
+  document.addEventListener('mousemove', ev => {
+    if (!drag) return;
+    const n = state.nodes.find(x => x.id === drag.id);
+    if (!n) return;
+    n.pos_x = Math.max(0, ev.clientX - drag.offX);
+    n.pos_y = Math.max(0, ev.clientY - drag.offY);
+    renderNodes();
+  });
+  document.addEventListener('mouseup', () => { drag = null; });
+
+  function renderInspector(){
+    if (!selected){ $insp.innerHTML = '<p class="text-slate-500">Select a node.</p>'; return; }
+    const n = state.nodes.find(x => x.id === selected);
+    if (!n){ $insp.innerHTML = '<p class="text-slate-500">Node missing.</p>'; return; }
+    const cfg = JSON.stringify(n.config || {}, null, 2);
+    $insp.innerHTML =
+      '<label class="block"><span class="text-xs text-slate-400">Label</span>'
+      + '<input id="pl-i-label" class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm" value="'+escapeHTML(n.label||n.type)+'" /></label>'
+      + '<label class="mt-2 block"><span class="text-xs text-slate-400">Type</span>'
+      + '<input class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm font-mono" value="'+escapeHTML(n.type)+'" disabled /></label>'
+      + '<label class="mt-2 block"><span class="text-xs text-slate-400">Config (JSON)</span>'
+      + '<textarea id="pl-i-config" rows="6" class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs font-mono">'+escapeHTML(cfg)+'</textarea></label>'
+      + '<div class="mt-3 flex gap-2">'
+      + '<button id="pl-i-apply" class="rounded bg-indigo-500 px-3 py-1 text-xs text-white">Apply</button>'
+      + '<button id="pl-i-delete" class="rounded bg-rose-700 px-3 py-1 text-xs text-white">Delete node</button>'
+      + '</div>'
+      + '<p class="mt-2 text-[11px] text-slate-500">For <span class="font-mono">condition</span> nodes, set <span class="font-mono">"fixture": "true"</span> or <span class="font-mono">"false"</span> to pin the branch. Otherwise the simulator auto-decides.</p>';
+    document.getElementById('pl-i-apply').addEventListener('click', () => {
+      const label = document.getElementById('pl-i-label').value;
+      const cfgText = document.getElementById('pl-i-config').value;
+      let parsed;
+      try { parsed = JSON.parse(cfgText || '{}'); } catch(e){ setStatus('Bad JSON: '+e.message); return; }
+      n.label = label;
+      n.config = parsed;
+      setStatus('Node updated. Click Save to persist.');
+      renderNodes();
+    });
+    document.getElementById('pl-i-delete').addEventListener('click', () => {
+      state.nodes = state.nodes.filter(x => x.id !== selected);
+      state.edges = state.edges.filter(e => e.source_id !== selected && e.target_id !== selected);
+      selected = null;
+      renderNodes();
+      renderInspector();
+      setStatus('Node deleted (not yet saved).');
+    });
+  }
+
+  function renderEdgeInspector(e){
+    $insp.innerHTML =
+      '<p class="text-xs text-slate-400 mb-2">Edge selected</p>'
+      + '<label class="block"><span class="text-xs text-slate-400">Condition label</span>'
+      + '<input id="pl-e-cond" class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm" value="'+escapeHTML(e.condition||'default')+'" />'
+      + '</label>'
+      + '<p class="text-[11px] text-slate-500 mt-1">Use <span class="font-mono">true</span>/<span class="font-mono">false</span> for condition branches, <span class="font-mono">default</span> for linear flow.</p>'
+      + '<div class="mt-3 flex gap-2">'
+      + '<button id="pl-e-apply" class="rounded bg-indigo-500 px-3 py-1 text-xs text-white">Apply</button>'
+      + '<button id="pl-e-delete" class="rounded bg-rose-700 px-3 py-1 text-xs text-white">Delete edge</button>'
+      + '</div>';
+    document.getElementById('pl-e-apply').addEventListener('click', () => {
+      e.condition = document.getElementById('pl-e-cond').value || 'default';
+      renderEdges();
+      setStatus('Edge updated.');
+    });
+    document.getElementById('pl-e-delete').addEventListener('click', () => {
+      state.edges = state.edges.filter(x => x !== e);
+      renderEdges();
+      setStatus('Edge removed.');
+      $insp.innerHTML = '<p class="text-slate-500">Select a node.</p>';
+    });
+  }
+
+  function setStatus(text){
+    $status.textContent = text;
+  }
+
+  document.querySelectorAll('#pl-palette [data-add]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const t = btn.dataset.add;
+      const node = {
+        id: genNodeId(t),
+        type: t,
+        label: t.charAt(0).toUpperCase() + t.slice(1),
+        pos_x: 40 + state.nodes.length * 40,
+        pos_y: 40 + state.nodes.length * 30,
+        config: defaultConfigFor(t),
+      };
+      state.nodes.push(node);
+      renderNodes();
+      setStatus('Added '+t+' node.');
+    });
+  });
+
+  function defaultConfigFor(t){
+    switch (t){
+      case 'prompt':    return { prompt: '', session_strategy: 'new' };
+      case 'wait':      return { strategy: 'duration', duration_sec: 60 };
+      case 'condition': return { left: 'last_message.content', right: 'ok', operator: 'contains', fixture: '' };
+      case 'handoff':   return { reason: 'quota exhausted' };
+      case 'notify':    return { channel: 'browser', message: '' };
+      default:          return {};
+    }
+  }
+
+  document.getElementById('pl-save').addEventListener('click', async () => {
+    setStatus('Saving…');
+    try {
+      const payload = {
+        nodes: state.nodes.map(n => ({
+          id: n.id, type: n.type, label: n.label,
+          pos_x: n.pos_x|0, pos_y: n.pos_y|0,
+          config: n.config || {},
+        })),
+        edges: state.edges.map(e => ({
+          id: e.id, source_id: e.source_id, target_id: e.target_id, condition: e.condition || 'default',
+        })),
+      };
+      const r = await fetch('/pipelines/' + encodeURIComponent(pipelineId) + '/graph', {
+        method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload),
+      });
+      if (!r.ok){ const t = await r.text(); throw new Error(t || r.status); }
+      setStatus('Saved.');
+      // Refresh graph so we see the bumped version + canonical IDs.
+      await reloadGraph();
+    } catch(e){ setStatus('Save failed: '+e.message); }
+  });
+
+  async function reloadGraph(){
+    const r = await fetch('/pipelines/' + encodeURIComponent(pipelineId) + '/graph');
+    if (!r.ok) return;
+    const g = await r.json();
+    state.nodes = g.nodes || [];
+    state.edges = g.edges || [];
+    renderNodes();
+  }
+
+  document.getElementById('pl-run').addEventListener('click', async () => {
+    setStatus('Starting run…');
+    try {
+      const r = await fetch('/pipelines/' + encodeURIComponent(pipelineId) + '/runs', { method:'POST' });
+      if (!r.ok){ const t = await r.text(); throw new Error(t || r.status); }
+      const j = await r.json();
+      activeRunId = j.run_id;
+      setStatus('Run started: ' + j.run_id);
+      $rdet.classList.remove('hidden');
+      pollRun(j.run_id);
+      refreshRuns();
+    } catch(e){ setStatus('Run failed: '+e.message); }
+  });
+
+  function pollRun(runId){
+    if (runPoll) clearInterval(runPoll);
+    const tick = async () => {
+      try {
+        const r = await fetch('/pipeline-runs/' + encodeURIComponent(runId));
+        if (!r.ok) return;
+        const j = await r.json();
+        renderSteps(j.steps);
+        renderRunBadge(j.run);
+        if (['succeeded','failed','cancelled'].includes(j.run.status) && runPoll){
+          clearInterval(runPoll); runPoll = null;
+          refreshRuns();
+        }
+      } catch(_) {}
+    };
+    tick();
+    runPoll = setInterval(tick, 1500);
+  }
+
+  function renderSteps(steps){
+    $steps.innerHTML = '';
+    (steps || []).forEach((s, i) => {
+      const li = document.createElement('li');
+      const color = ({succeeded:'#10b981',failed:'#ef4444',running:'#f59e0b',skipped:'#94a3b8',pending:'#64748b'}[s.status]) || '#cbd5e1';
+      li.innerHTML = '<span style="color:'+color+';">#'+(i+1)+'</span> '
+                   + '<span style="color:#e2e8f0;">'+escapeHTML(s.node_id)+'</span> '
+                   + '<span style="color:#64748b;">['+escapeHTML(s.status)+']</span>'
+                   + (s.error_msg ? ' <span style="color:#fda4af;">'+escapeHTML(s.error_msg)+'</span>' : '');
+      $steps.appendChild(li);
+    });
+  }
+
+  function renderRunBadge(run){
+    setStatus('Run '+ (run.id||'').slice(0,8) +' : '+run.status + (run.error_msg ? ' — '+run.error_msg : ''));
+  }
+
+  $rbBtn.addEventListener('click', async () => {
+    if (!activeRunId) return;
+    setStatus('Rolling back…');
+    try {
+      const r = await fetch('/pipeline-runs/' + encodeURIComponent(activeRunId) + '/rollback', { method:'POST' });
+      if (!r.ok){ const t = await r.text(); throw new Error(t || r.status); }
+      pollRun(activeRunId);
+      setStatus('Rolled back one step.');
+    } catch(e){ setStatus('Rollback failed: '+e.message); }
+  });
+
+  async function refreshRuns(){
+    const r = await fetch('/pipelines/' + encodeURIComponent(pipelineId) + '/runs?limit=10');
+    if (!r.ok) return;
+    const j = await r.json();
+    runs = j.runs || [];
+    $runs.innerHTML = '';
+    runs.forEach(rn => {
+      const li = document.createElement('li');
+      const color = ({succeeded:'#10b981',failed:'#ef4444',running:'#f59e0b',pending:'#64748b',cancelled:'#94a3b8'}[rn.status]) || '#cbd5e1';
+      li.innerHTML = '<a href="#" data-run="'+escapeHTML(rn.id)+'" style="color:#cbd5e1;text-decoration:none;">'
+                   + '<span style="color:'+color+';font-weight:600;">'+escapeHTML(rn.status)+'</span> '
+                   + escapeHTML(rn.id.slice(0,8))+'</a>';
+      $runs.appendChild(li);
+    });
+    $runs.querySelectorAll('a[data-run]').forEach(a => {
+      a.addEventListener('click', ev => {
+        ev.preventDefault();
+        activeRunId = a.dataset.run;
+        $rdet.classList.remove('hidden');
+        pollRun(activeRunId);
+      });
+    });
+  }
+
+  // initial render
+  renderNodes();
+  refreshRuns();
+})();
+</script>
+{{end}}
