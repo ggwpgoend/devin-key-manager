@@ -136,11 +136,14 @@ func (d *Downloader) Fetch(ctx context.Context, a Artifact) error {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		preview, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		var msg string
+		// Keep the raw server response in the error so the user can tell
+		// the difference between "wrong key" and "asset really is gone".
+		// The hint is appended only for the 401/403 case where rotating
+		// the key is plausibly the fix.
+		previewStr := strings.TrimSpace(string(preview))
+		msg := fmt.Sprintf("http %d: %s", resp.StatusCode, previewStr)
 		if resp.StatusCode == 401 || resp.StatusCode == 403 {
-			msg = "API key unauthorized or quota exhausted — try rotating to a new key"
-		} else {
-			msg = fmt.Sprintf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(preview)))
+			msg += " (key may be unauthorized or out of quota — try rotating to a new key)"
 		}
 		_ = d.repo.MarkFailed(ctx, a.ID, msg)
 		return errors.New(msg)

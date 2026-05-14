@@ -1,5 +1,6 @@
 {{define "task_form"}}
-<div class="fixed inset-0 z-40 flex items-start justify-center bg-slate-950/70 backdrop-blur-sm pt-16">
+<div class="fixed inset-0 z-40 flex items-start justify-center bg-slate-950/70 backdrop-blur-sm pt-16"
+     onclick="if(event.target===this){this.remove();}">
   <div class="w-full max-w-xl rounded-xl border border-slate-700 bg-slate-900 shadow-xl">
     <div class="flex items-center justify-between border-b border-slate-800 px-5 py-4">
       <h2 class="text-base font-semibold">New task</h2>

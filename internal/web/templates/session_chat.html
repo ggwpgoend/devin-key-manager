@@ -1,7 +1,9 @@
 {{define "content"}}
 <div class="flex flex-col h-[calc(100vh-9rem)]">
-  <!-- Header (Devin.ai-style) -->
-  <div class="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
+  <!-- Header (Devin.ai-style). Sticks to the top of the chat container so
+       the page-level controls (status, file list, refresh, rotate) stay
+       reachable while the message stream scrolls. -->
+  <div class="chat-sticky-header flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
     <div class="min-w-0 flex-1">
       <a href="/tasks/{{.Task.ID}}" class="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300 transition-colors">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3 h-3"><path d="M19 12H5m0 0l7 7m-7-7l7-7"/></svg>
@@ -62,7 +64,7 @@
         class="rounded-md border border-purple-700/60 bg-purple-900/30 px-3 py-1.5 text-xs text-purple-100 hover:bg-purple-900/50"
         hx-post="/sessions/{{.Session.ID}}/fork"
         hx-confirm="Fork this session at the most recent message? A new branch is created locally with the same history."
-        title="B14: save a checkpoint of the conversation and branch into a new session.">
+        title="Save a checkpoint of the conversation and branch into a new session.">
         Fork
       </button>
     </div>
@@ -129,11 +131,16 @@
     </form>
   </details>
 
-  <!-- Session status banner -->
+  <!-- Session status banner. "running" is the only state with two
+       sub-states: "Devin is working" (we just sent a user message and are
+       waiting on a reply) vs. "awaiting your reply" (Devin already
+       responded but the session is still open on its side). LastMsgIsUser
+       distinguishes them so the banner stops claiming activity after Devin
+       has answered. -->
   <div class="devin-session-banner {{.StatusLabel}} mt-3">
     <span class="devin-status-dot {{if eq .StatusLabel "running"}}running{{else if eq .StatusLabel "completed"}}completed{{else if eq .StatusLabel "failed"}}failed{{else}}idle{{end}}"></span>
-    {{if eq .StatusLabel "running"}}Devin is working on this task...
-    {{else if eq .StatusLabel "blocked"}}Devin is waiting for input
+    {{if eq .StatusLabel "running"}}{{if .LastMsgIsUser}}Devin is working on this task...{{else}}Awaiting your reply
+    {{end}}{{else if eq .StatusLabel "blocked"}}Devin is waiting for input
     {{else if eq .StatusLabel "completed"}}Task completed
     {{else if eq .StatusLabel "failed"}}Task failed
     {{else if eq .StatusLabel "quota_exhausted"}}Key quota exhausted — rotate to continue
@@ -161,10 +168,10 @@
 
   <!-- Toolbar above composer: search, continue, attach -->
   <div class="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-800 pt-3">
-    <input type="text" id="chat-search-q" placeholder="Search this session…"
+    <input type="text" id="chat-search-q" placeholder="Search this session… (min 2 chars)"
       class="flex-1 min-w-[160px] rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
       hx-get="/sessions/{{.Session.ID}}/search"
-      hx-trigger="keyup changed delay:300ms"
+      hx-trigger="keyup changed delay:300ms[event.target.value.trim().length>=2], search"
       hx-target="#chat-search-results"
       hx-swap="innerHTML"
       hx-headers='{"Accept":"text/html"}'
@@ -173,15 +180,18 @@
     <button type="button"
             hx-post="/sessions/{{.Session.ID}}/continue"
             hx-swap="none"
+            hx-on::after-request="window.devinmgrToast && window.devinmgrToast(event.detail.successful ? 'Continue sent' : 'Continue failed', event.detail.successful ? 'ok' : 'err')"
             class="rounded-md border border-slate-700 bg-slate-900/60 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800"
-            title="Send 'continue' to resume after Devin stopped mid-thought (C30).">Continue</button>
+            title="Send 'continue' to resume after Devin stopped mid-thought.">Continue</button>
     <label class="cursor-pointer rounded-md border border-slate-700 bg-slate-900/60 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800"
-           title="Upload a file. We host it on file.io and post the link to Devin (C26).">
+           title="Upload a file. We host it and post the link to Devin.">
       Attach
       <input type="file" class="hidden"
              hx-post="/sessions/{{.Session.ID}}/attachments"
              hx-encoding="multipart/form-data"
              hx-swap="none"
+             hx-on::before-request="window.devinmgrToast && window.devinmgrToast('Uploading…', 'ok')"
+             hx-on::after-request="window.devinmgrToast && window.devinmgrToast(event.detail.successful ? 'Upload complete' : 'Upload failed', event.detail.successful ? 'ok' : 'err')"
              onchange="htmx.trigger(this, 'submit'); this.value = ''"
              name="file" />
     </label>

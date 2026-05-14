@@ -43,7 +43,6 @@
     if (!(j.tasks||[]).length){ out.innerHTML = '<li class="text-slate-500">no semantic matches.</li>'; return; }
     out.innerHTML = j.tasks.map(t => '<li class="rounded border border-slate-800 bg-slate-950 p-2"><a href="/tasks/'+t.id+'" class="text-indigo-300 hover:text-indigo-200">'+escapeHTML(t.title)+'</a> <span class="text-xs text-slate-500">score '+(t.score||0).toFixed(2)+' · '+t.status+(t.tags?' · '+escapeHTML(t.tags):'')+'</span><div class="text-xs text-slate-400 mt-1">'+escapeHTML(t.prompt)+'</div></li>').join('');
   }
-  function escapeHTML(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c])); }
   document.getElementById('task-similar-go').addEventListener('click', run);
   document.getElementById('task-similar-clear').addEventListener('click', () => { q.value=''; out.innerHTML=''; });
   q.addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); run(); } });
@@ -63,7 +62,6 @@
         <th class="px-4 py-3 text-left">Tags</th>
         <th class="px-4 py-3 text-left">Status</th>
         <th class="px-4 py-3 text-left">Updated</th>
-        <th class="px-4 py-3 text-right">Actions</th>
       </tr>
     </thead>
     <tbody class="divide-y divide-slate-800 bg-slate-950/40">
@@ -83,9 +81,6 @@
           </span>
         </td>
         <td class="px-4 py-3 text-slate-400">{{.UpdatedAt.Format "2006-01-02 15:04"}}</td>
-        <td class="px-4 py-3 text-right">
-          <a href="/tasks/{{.ID}}" class="text-indigo-300 hover:text-indigo-200">open</a>
-        </td>
       </tr>
       {{end}}
     </tbody>

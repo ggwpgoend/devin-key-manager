@@ -191,9 +191,6 @@
     return '#94a3b8';
   }
 
-  function escapeHTML(s){
-    return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  }
 
   function onNodeMouseDown(ev){
     if (ev.shiftKey) return;

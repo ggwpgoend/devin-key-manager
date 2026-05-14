@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"strings"
@@ -151,7 +152,11 @@ func (s *Server) setMessagePin(w http.ResponseWriter, r *http.Request, pinned bo
 
 func (s *Server) handleSessionSearch(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "id")
-	q := r.URL.Query().Get("q")
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeSearchResponse(w, r, nil, q)
+		return
+	}
 	limitN := parseLimit(r.URL.Query().Get("limit"), 50)
 	hits, err := s.sessions.SearchMessages(r.Context(), q, sessionID, limitN)
 	if err != nil {
@@ -163,7 +168,11 @@ func (s *Server) handleSessionSearch(w http.ResponseWriter, r *http.Request) {
 
 // handleGlobalSearch is the K81-flavour: FTS5 across every session.
 func (s *Server) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("q")
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeSearchResponse(w, r, nil, q)
+		return
+	}
 	limitN := parseLimit(r.URL.Query().Get("limit"), 100)
 	hits, err := s.sessions.SearchMessages(r.Context(), q, "", limitN)
 	if err != nil {
@@ -173,8 +182,12 @@ func (s *Server) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
 	writeSearchResponse(w, r, hits, q)
 }
 
+// writeSearchResponse picks the response shape based on the caller. We hand
+// JSON only to explicit JSON consumers (Accept: application/json), so plain
+// HTMX swaps — which target a div via hx-swap="innerHTML" — get a usable
+// HTML fragment instead of having raw JSON dumped into the page.
 func writeSearchResponse(w http.ResponseWriter, r *http.Request, hits []sessions.SearchHit, q string) {
-	if acceptsJSON(r) || isHTMX(r) {
+	if acceptsJSON(r) && !isHTMX(r) {
 		type respHit struct {
 			MessageID string `json:"message_id"`
 			SessionID string `json:"session_id"`
@@ -200,14 +213,32 @@ func writeSearchResponse(w http.ResponseWriter, r *http.Request, hits []sessions
 		_ = json.NewEncoder(w).Encode(map[string]any{"query": q, "hits": out})
 		return
 	}
-	// Fallback HTML: minimal list. The user-facing JS calls this with HTMX
-	// to render results inline, so this branch is rarely exercised.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = fmt.Fprintf(w, `<div class="s-card"><h3>Search results for %q</h3><ol>`, q)
-	for _, h := range hits {
-		_, _ = fmt.Fprintf(w, `<li><a href="/sessions/%s">%s</a> — %s</li>`, h.Message.SessionID, h.TaskTitle, h.Snippet)
+	if q == "" {
+		_, _ = io.WriteString(w, ``)
+		return
 	}
-	_, _ = io.WriteString(w, `</ol></div>`)
+	if len(hits) == 0 {
+		_, _ = fmt.Fprintf(w, `<div class="rounded-md border border-slate-800 bg-slate-900/40 px-3 py-2 text-xs text-slate-400">No matches for %s.</div>`, html.EscapeString(q))
+		return
+	}
+	_, _ = io.WriteString(w, `<ul class="space-y-1 text-xs">`)
+	for _, h := range hits {
+		role := html.EscapeString(string(h.Message.Role))
+		snippet := html.EscapeString(h.Snippet)
+		title := html.EscapeString(h.TaskTitle)
+		ts := html.EscapeString(h.Message.Timestamp.UTC().Format("2006-01-02 15:04"))
+		_, _ = fmt.Fprintf(w,
+			`<li class="rounded-md border border-slate-800 bg-slate-900/50 px-2 py-1.5">`+
+				`<a href="/sessions/%s#msg-%s" class="text-indigo-300 hover:text-indigo-200">%s</a> `+
+				`<span class="font-mono text-[10px] text-slate-500">%s · %s</span>`+
+				`<div class="mt-1 text-slate-300">%s</div></li>`,
+			html.EscapeString(h.Message.SessionID),
+			html.EscapeString(h.Message.ID),
+			title, role, ts, snippet,
+		)
+	}
+	_, _ = io.WriteString(w, `</ul>`)
 }
 
 // --- C30: continue from stopped ---

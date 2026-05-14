@@ -37,13 +37,14 @@
   --yellow-bright:#d4a53a;
   --radius:12px;
 
-  /* Font stacks: system-ui equivalents for the prototype's webfonts.
-     We could embed Source Serif 4 / DM Sans / JetBrains Mono as woff2
-     under /static/vendor/fonts/, but the system stacks are close enough
-     to keep the binary trim and the design palette readable. */
-  --font-display:'Source Serif 4',ui-serif,Georgia,'Times New Roman',serif;
-  --font-body:'DM Sans',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
-  --font-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  /* Font stacks: pure system fonts. The prototype shipped with named
+     webfonts (Source Serif 4 / DM Sans / JetBrains Mono) but we never
+     loaded them — leaving the names in caused inconsistent rendering
+     depending on what each user happened to have installed locally.
+     Sticking to system stacks keeps every machine on the same font. */
+  --font-display:ui-serif,Georgia,'Times New Roman',serif;
+  --font-body:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
 
 html{scroll-behavior:smooth}
@@ -183,6 +184,11 @@ body::after{
 .s-bento .bento-full{grid-column:1 / -1}
 @media(max-width:768px){.s-bento{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}.s-bento .bento-wide{grid-column:span 2}}
 @media(max-width:480px){.s-bento{grid-template-columns:1fr}.s-bento .bento-wide,.s-bento .bento-tall{grid-column:1 / -1;grid-row:auto}}
+
+/* Dashboard two-column split (recent tasks + key pool). Collapses to a
+   single column under 900px so each card has room to breathe. */
+.dashboard-split{display:grid;grid-template-columns:1.4fr 1fr;gap:14px;margin-bottom:24px}
+@media(max-width:900px){.dashboard-split{grid-template-columns:1fr}}
 
 /* ======== STATS ======== */
 .s-stat-val{
@@ -358,11 +364,11 @@ body::after{
 
 /* Chat bubble headers */
 .chat-bubble-header-user{
-  display:flex;align-items:center;justify-content:space-between;
+  display:flex;align-items:center;justify-content:space-between;gap:0.5rem;
   font-size:0.72rem;opacity:0.8;margin-bottom:4px;
 }
 .chat-bubble-header-devin{
-  display:flex;align-items:center;justify-content:space-between;
+  display:flex;align-items:center;justify-content:space-between;gap:0.5rem;
   margin-bottom:4px;
 }
 
@@ -543,6 +549,17 @@ body::after{
 }
 .devin-msg-group:hover{border-left-color:var(--accent)}
 
-@keyframes storm-blink{
-  0%,100%{opacity:1}50%{opacity:0.4}
+/* Sticky chat header (#27): keeps action buttons visible while the message
+   stream scrolls. Lives inside the chat container; the outer page does
+   not scroll on the chat page. */
+.chat-sticky-header{
+  position:sticky;top:0;z-index:5;
+  background:var(--bg);padding-bottom:0.75rem;
+}
+
+/* Footer (storm-footer): tiny meta line at the bottom of every page. */
+.storm-footer{
+  padding-top:8px;padding-bottom:90px;
+  color:var(--text-dim);font-size:0.6rem;text-align:center;
+  opacity:0.3;pointer-events:none;user-select:none;
 }
