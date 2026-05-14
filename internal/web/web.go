@@ -3,6 +3,7 @@
 package web
 
 import (
+	"archive/zip"
 	"context"
 	"embed"
 	"errors"
@@ -12,8 +13,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -54,6 +58,12 @@ type Server struct {
 // that multiple pages can each define a {{define "content"}} block without
 // clashing in a single shared parse tree.
 var pageContentFiles = map[string]string{
+	"keys_index":       "templates/keys_index.html",
+	"tasks_index":      "templates/tasks_index.html",
+	"task_detail":      "templates/task_detail.html",
+	"session_chat":     "templates/session_chat.html",
+	"session_files":    "templates/session_files.html",
+	"artifact_preview": "templates/artifact_preview.html",
 	"keys_index":      "templates/keys_index.html",
 	"tasks_index":     "templates/tasks_index.html",
 	"task_detail":     "templates/task_detail.html",
@@ -188,12 +198,15 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/{id}/rotate", s.handleSessionRotate)
 		r.Post("/{id}/snap", s.handleSessionSnap)
 		r.Get("/{id}/files", s.handleSessionFiles)
+		r.Get("/{id}/files.zip", s.handleSessionFilesZip)
+		r.Post("/{id}/files/open", s.handleSessionFilesOpen)
 		r.Post("/{id}/notes", s.handleSessionNotes)
 	})
 
 	r.Route("/artifacts", func(r chi.Router) {
 		r.Get("/{id}/raw", s.handleArtifactRaw)
 		r.Get("/{id}/download", s.handleArtifactDownload)
+		r.Get("/{id}/preview", s.handleArtifactPreview)
 	})
 
 	r.Route("/handoffs", func(r chi.Router) {
@@ -712,6 +725,10 @@ func (s *Server) handleSessionFiles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var dir string
+	if root := s.manager.ArtifactsRoot(); root != "" {
+		dir = filepath.Join(root, sess.ID)
+	}
 	s.renderPage(w, r, "session_files", pageData{
 		Title:         "Files \u00b7 " + task.Title,
 		Active:        "tasks",
@@ -720,8 +737,122 @@ func (s *Server) handleSessionFiles(w http.ResponseWriter, r *http.Request) {
 		Task:          task,
 		Session:       sess,
 		Artifacts:     list,
+		ArtifactsDir:  dir,
 		Flash:         r.URL.Query().Get("flash"),
 	})
+}
+
+// handleSessionFilesZip streams a zip of every ready artifact for the session
+// so the user can grab them all in one click. Files inside the zip are named
+// after the artifact filename; the streamer skips pending / failed rows so
+// the archive only contains usable bytes.
+func (s *Server) handleSessionFilesZip(w http.ResponseWriter, r *http.Request) {
+	if s.artifacts == nil {
+		http.Error(w, "artifacts disabled", http.StatusNotFound)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	sess, err := s.sessions.Get(r.Context(), id)
+	if errors.Is(err, sessions.ErrNotFound) {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	list, err := s.artifacts.ListBySession(r.Context(), sess.ID)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", contentDispositionAttachment(fmt.Sprintf("session-%s.zip", sess.ID)))
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+	used := make(map[string]int)
+	var skipped []string
+	for _, a := range list {
+		if a.Status != artifacts.StatusReady || a.LocalPath == "" {
+			continue
+		}
+		// Open + stat the file BEFORE creating a zip entry. If the file
+		// disappeared or the disk is unhappy, we'd rather skip the
+		// artifact and note it in the summary than write a zip entry
+		// whose header claims N bytes followed by a truncated payload
+		// (which leaves a corrupt CRC and unzip errors at the recipient).
+		fh, ferr := os.Open(a.LocalPath)
+		if ferr != nil {
+			s.logger.Warn("zip open file", "path", a.LocalPath, "err", ferr)
+			skipped = append(skipped, fmt.Sprintf("%s: open failed: %v", a.Filename, ferr))
+			continue
+		}
+		name := uniqueZipName(a.Filename, used)
+		fw, werr := zw.Create(name)
+		if werr != nil {
+			_ = fh.Close()
+			s.logger.Warn("zip create entry", "err", werr)
+			skipped = append(skipped, fmt.Sprintf("%s: zip create failed: %v", a.Filename, werr))
+			continue
+		}
+		if _, cerr := io.Copy(fw, fh); cerr != nil {
+			// The entry header is already in the stream; we can't yank it
+			// out. archive/zip's data descriptor will record whatever bytes
+			// we wrote, so the resulting entry's CRC will mismatch the
+			// truncated payload. Note it in skipped[] and keep going so the
+			// other files still land in the archive.
+			s.logger.Warn("zip copy file", "path", a.LocalPath, "err", cerr)
+			skipped = append(skipped, fmt.Sprintf("%s: copy truncated at byte position: %v", a.Filename, cerr))
+		}
+		_ = fh.Close()
+	}
+	// Always include a summary entry — empty when everything succeeded —
+	// so users can audit what made it into the archive without having to
+	// cross-reference the UI. The presence/absence of names in skipped is
+	// also how we surface partial failures (#19).
+	if fw, werr := zw.Create("_manifest.txt"); werr == nil {
+		var b strings.Builder
+		fmt.Fprintf(&b, "session-id: %s\n", sess.ID)
+		fmt.Fprintf(&b, "generated-at: %s\n", time.Now().UTC().Format(time.RFC3339))
+		fmt.Fprintf(&b, "included: %d\n", len(used))
+		if len(skipped) > 0 {
+			b.WriteString("\n# Skipped entries:\n")
+			for _, s := range skipped {
+				b.WriteString("- ")
+				b.WriteString(s)
+				b.WriteString("\n")
+			}
+		}
+		_, _ = fw.Write([]byte(b.String()))
+	}
+}
+
+// handleSessionFilesOpen opens the local artifact folder in the host OS's
+// file manager. Only safe because the manager binds to localhost — the
+// endpoint is a no-op when the artifacts directory is missing.
+func (s *Server) handleSessionFilesOpen(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	root := s.manager.ArtifactsRoot()
+	if root == "" {
+		http.Error(w, "artifacts disabled", http.StatusNotFound)
+		return
+	}
+	dir := filepath.Join(root, id)
+	if _, err := os.Stat(dir); err != nil {
+		// The folder may not exist yet if no artifacts have downloaded; try
+		// to create it so the file-manager has something to open.
+		if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
+			http.Error(w, "folder unavailable: "+mkErr.Error(), http.StatusNotFound)
+			return
+		}
+	}
+	if err := openInFileManager(dir); err != nil {
+		s.logger.Warn("open folder", "dir", dir, "err", err)
+		http.Error(w, "could not open folder: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<span class="text-emerald-300">Opened %s</span>`, template.HTMLEscapeString(dir))
 }
 
 // handleArtifactRaw streams the on-disk artifact body with the recorded
@@ -735,6 +866,90 @@ func (s *Server) handleArtifactRaw(w http.ResponseWriter, r *http.Request) {
 // rendering it inline.
 func (s *Server) handleArtifactDownload(w http.ResponseWriter, r *http.Request) {
 	s.serveArtifact(w, r, true)
+}
+
+// previewMaxBytes caps the inline-preview body to 256 KiB. Anything bigger is
+// summarised with a download nudge — code review for a half-megabyte source
+// file inside a browser tab isn't a sensible UX.
+const previewMaxBytes = 256 * 1024
+
+// handleArtifactPreview renders a syntax-highlighted preview page for a
+// text-like artifact. Image artifacts redirect to /raw; binary artifacts get
+// a "this file isn't previewable" page with a download link.
+func (s *Server) handleArtifactPreview(w http.ResponseWriter, r *http.Request) {
+	if s.artifacts == nil {
+		http.Error(w, "artifacts disabled", http.StatusNotFound)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	a, err := s.artifacts.Get(r.Context(), id)
+	if errors.Is(err, artifacts.ErrNotFound) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	if a.Status != artifacts.StatusReady || a.LocalPath == "" {
+		http.Error(w, "artifact not ready", http.StatusAccepted)
+		return
+	}
+	if a.IsImage() {
+		http.Redirect(w, r, "/artifacts/"+a.ID+"/raw", http.StatusSeeOther)
+		return
+	}
+
+	view := pageData{
+		Title:         "Preview \u00b7 " + a.Filename,
+		Active:        "tasks",
+		Version:       version.Version,
+		MasterKeyPath: s.masterKeyPath,
+		Artifact:      a,
+		PreviewLang:   a.PreviewLanguage(),
+	}
+	if sess, gerr := s.sessions.Get(r.Context(), a.SessionID); gerr == nil {
+		view.Session = sess
+		if task, terr := s.tasks.Get(r.Context(), sess.TaskID); terr == nil {
+			view.Task = task
+		}
+	}
+	if !a.IsTextLike() {
+		view.PreviewBinary = true
+		s.renderPage(w, r, "artifact_preview", view)
+		return
+	}
+	fh, oerr := os.Open(a.LocalPath)
+	if oerr != nil {
+		view.PreviewError = "could not open file: " + oerr.Error()
+		s.renderPage(w, r, "artifact_preview", view)
+		return
+	}
+	defer fh.Close()
+	body, rerr := io.ReadAll(io.LimitReader(fh, previewMaxBytes+1))
+	if rerr != nil {
+		view.PreviewError = "could not read file: " + rerr.Error()
+		s.renderPage(w, r, "artifact_preview", view)
+		return
+	}
+	if int64(len(body)) > previewMaxBytes {
+		body = body[:previewMaxBytes]
+		view.PreviewTooBig = true
+	}
+	// Sanitise non-UTF-8 input. Some artifacts come back as Windows-1251
+	// dumps, Latin-1 logs, or binary-with-text-extension; rendering those
+	// directly in the page would leak U+FFFD-laden mojibake into the
+	// browser's source viewer. We detect invalid UTF-8 and fall back to
+	// the "preview unavailable" branch so the user gets a clean download
+	// link instead of garbled text.
+	if !utf8.Valid(body) {
+		view.PreviewBinary = true
+		view.PreviewError = "file is not valid UTF-8 — preview unavailable (use Download)"
+		s.renderPage(w, r, "artifact_preview", view)
+		return
+	}
+	view.PreviewBody = string(body)
+	s.renderPage(w, r, "artifact_preview", view)
 }
 
 func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, asAttachment bool) {
@@ -760,7 +975,7 @@ func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, asAttachm
 		w.Header().Set("Content-Type", a.ContentType)
 	}
 	if asAttachment {
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, a.Filename))
+		w.Header().Set("Content-Disposition", contentDispositionAttachment(a.Filename))
 	}
 	http.ServeFile(w, r, a.LocalPath)
 }
@@ -971,6 +1186,7 @@ type pageData struct {
 	Messages        []sessions.Message
 	MessageViews    []messageView
 	Artifacts       []artifacts.Artifact
+	ArtifactsDir    string
 	StatusLabel     string
 	Composer        composerData
 	InboundHandoff  handoffs.Handoff

@@ -378,6 +378,16 @@ func (m *Manager) ArtifactsRepo() *artifacts.Repo { return m.artifacts }
 // the manager, which creates a chicken-and-egg ordering issue at startup.
 func (m *Manager) SetDownloader(d *artifacts.Downloader) { m.downloader = d }
 
+// ArtifactsRoot returns the on-disk root directory the downloader is using,
+// or "" if artifacts support was not wired in. Used by the UI to render the
+// per-session folder path and the "Open folder" action.
+func (m *Manager) ArtifactsRoot() string {
+	if m.downloader == nil {
+		return ""
+	}
+	return m.downloader.Root()
+}
+
 // BearerForSession returns the decrypted API key associated with a session's
 // key. Used as an artifacts.BearerProvider so the downloader can authenticate
 // when fetching remote attachment URLs.
