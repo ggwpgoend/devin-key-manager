@@ -64,6 +64,91 @@ func (a Artifact) IsImage() bool {
 	return strings.HasPrefix(strings.ToLower(a.ContentType), "image/")
 }
 
+// IsTextLike reports whether the artifact is plausibly previewable as text
+// (source code, JSON, YAML, Markdown, plain prose, …). The check looks at
+// the content type first, then falls back to a small allow-list of file
+// extensions for cases where the server didn't set a Content-Type.
+func (a Artifact) IsTextLike() bool {
+	ct := strings.ToLower(a.ContentType)
+	switch {
+	case strings.HasPrefix(ct, "text/"):
+		return true
+	case strings.HasPrefix(ct, "application/json"):
+		return true
+	case strings.HasPrefix(ct, "application/xml"):
+		return true
+	case strings.HasPrefix(ct, "application/javascript"):
+		return true
+	case strings.HasPrefix(ct, "application/x-yaml"), strings.HasPrefix(ct, "application/yaml"):
+		return true
+	}
+	// Fallback: look at the extension. We deliberately keep this list small
+	// — anything more exotic should ship the right Content-Type.
+	name := strings.ToLower(a.Filename)
+	for _, ext := range []string{
+		".txt", ".md", ".markdown", ".json", ".yml", ".yaml",
+		".toml", ".ini", ".cfg", ".conf",
+		".go", ".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".rb",
+		".java", ".kt", ".swift", ".c", ".h", ".cpp", ".hpp", ".cc",
+		".cs", ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd",
+		".html", ".htm", ".css", ".scss", ".sass", ".xml", ".csv",
+		".sql", ".dockerfile", ".tf", ".lua",
+	} {
+		if strings.HasSuffix(name, ext) {
+			return true
+		}
+	}
+	// Generic "no extension" files (like Dockerfile, Makefile) too.
+	switch name {
+	case "dockerfile", "makefile", "license", "readme", "changelog":
+		return true
+	}
+	return false
+}
+
+// PreviewLanguage returns a hint for highlight.js based on the filename or
+// content type. Empty string means "let highlight.js auto-detect".
+func (a Artifact) PreviewLanguage() string {
+	name := strings.ToLower(a.Filename)
+	switch {
+	case strings.HasSuffix(name, ".go"):
+		return "go"
+	case strings.HasSuffix(name, ".py"):
+		return "python"
+	case strings.HasSuffix(name, ".js"), strings.HasSuffix(name, ".jsx"):
+		return "javascript"
+	case strings.HasSuffix(name, ".ts"), strings.HasSuffix(name, ".tsx"):
+		return "typescript"
+	case strings.HasSuffix(name, ".rs"):
+		return "rust"
+	case strings.HasSuffix(name, ".json"):
+		return "json"
+	case strings.HasSuffix(name, ".yaml"), strings.HasSuffix(name, ".yml"):
+		return "yaml"
+	case strings.HasSuffix(name, ".md"), strings.HasSuffix(name, ".markdown"):
+		return "markdown"
+	case strings.HasSuffix(name, ".sh"), strings.HasSuffix(name, ".bash"):
+		return "bash"
+	case strings.HasSuffix(name, ".html"), strings.HasSuffix(name, ".htm"):
+		return "xml"
+	case strings.HasSuffix(name, ".css"), strings.HasSuffix(name, ".scss"):
+		return "css"
+	case strings.HasSuffix(name, ".sql"):
+		return "sql"
+	case strings.HasSuffix(name, ".java"):
+		return "java"
+	case strings.HasSuffix(name, ".cs"):
+		return "csharp"
+	case strings.HasSuffix(name, ".rb"):
+		return "ruby"
+	case strings.HasSuffix(name, ".ps1"):
+		return "powershell"
+	case strings.HasSuffix(name, ".dockerfile"), name == "dockerfile":
+		return "dockerfile"
+	}
+	return ""
+}
+
 // ErrNotFound is returned by Repo lookups when no matching row exists.
 var ErrNotFound = errors.New("artifacts: not found")
 

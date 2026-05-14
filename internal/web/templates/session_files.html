@@ -12,12 +12,35 @@
         Everything Devin attached or linked in this session. Images are previewed inline; click
         any tile to open or download the underlying file.
       </p>
+      {{if .ArtifactsDir}}
+      <p class="mt-2 break-all font-mono text-[11px] text-slate-500">
+        Stored at <span class="text-slate-300">{{.ArtifactsDir}}</span>
+      </p>
+      {{end}}
     </div>
-    <div class="flex items-center gap-2">
+    <div class="flex shrink-0 flex-wrap items-center justify-end gap-2">
       <a href="/sessions/{{.Session.ID}}"
          class="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
         Open chat
       </a>
+      {{if .Artifacts}}
+      <a href="/sessions/{{.Session.ID}}/files.zip"
+         class="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800"
+         title="Download every ready file as a single zip archive.">
+        Download all (zip)
+      </a>
+      {{end}}
+      {{if .ArtifactsDir}}
+      <button type="button"
+              class="rounded-md bg-indigo-500/90 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-400"
+              hx-post="/sessions/{{.Session.ID}}/files/open"
+              hx-target="#open-folder-status"
+              hx-swap="innerHTML"
+              title="Open the local artifacts folder in your OS file manager.">
+        Open folder
+      </button>
+      <span id="open-folder-status" class="text-xs text-slate-400"></span>
+      {{end}}
     </div>
   </div>
 
@@ -142,6 +165,8 @@ document.querySelectorAll('.pr16-lint').forEach(btn => {
           <img src="/artifacts/{{.ID}}/raw" alt="{{.Filename}}"
                class="h-full w-full object-contain" />
         </a>
+        {{else if and (eq (printf "%s" .Status) "ready") .IsTextLike}}
+        <a href="/artifacts/{{.ID}}/preview" class="text-center text-4xl text-slate-600 hover:text-slate-400" title="Preview as text">📝</a>
         {{else if eq (printf "%s" .Status) "ready"}}
         <div class="text-center text-4xl text-slate-600">{{/* generic file icon */}}📄</div>
         {{else if eq (printf "%s" .Status) "failed"}}
@@ -163,12 +188,19 @@ document.querySelectorAll('.pr16-lint').forEach(btn => {
           {{if gt .SizeBytes 0}}<span class="text-slate-600">·</span><span>{{.SizeBytes}} B</span>{{end}}
         </div>
         {{if .Error}}<div class="text-[11px] text-rose-300">{{.Error}}</div>{{end}}
-        <div class="mt-auto flex items-center gap-2 pt-1">
+        <div class="mt-auto flex flex-wrap items-center gap-2 pt-1">
           {{if eq (printf "%s" .Status) "ready"}}
+          {{if .IsTextLike}}
+          <a href="/artifacts/{{.ID}}/preview"
+             class="rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-800">
+            Preview
+          </a>
+          {{else}}
           <a href="/artifacts/{{.ID}}/raw" target="_blank"
              class="rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-200 hover:bg-slate-800">
             View
           </a>
+          {{end}}
           <a href="/artifacts/{{.ID}}/download"
              class="rounded-md bg-indigo-500/90 px-2 py-1 text-[11px] font-medium text-white hover:bg-indigo-400">
             Download
