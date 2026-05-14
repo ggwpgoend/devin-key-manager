@@ -1,19 +1,23 @@
 {{define "content"}}
 <div class="flex flex-col h-[calc(100vh-9rem)]">
-  <!-- Header -->
+  <!-- Header (Devin.ai-style) -->
   <div class="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
-    <div class="min-w-0">
-      <div class="flex items-center gap-2 text-xs uppercase tracking-wider text-slate-500">
-        <a href="/tasks/{{.Task.ID}}" class="hover:text-slate-300">← {{.Task.Title}}</a>
-      </div>
-      <h1 class="mt-1 truncate text-xl font-semibold">Chat with Devin</h1>
-      <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
-        <span>Key:</span>
+    <div class="min-w-0 flex-1">
+      <a href="/tasks/{{.Task.ID}}" class="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300 transition-colors">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3 h-3"><path d="M19 12H5m0 0l7 7m-7-7l7-7"/></svg>
+        {{.Task.Title}}
+      </a>
+      <h1 class="mt-1 truncate text-lg font-semibold flex items-center gap-2">
+        <span class="devin-status-dot {{if eq .StatusLabel "running"}}running{{else if eq .StatusLabel "completed"}}completed{{else if eq .StatusLabel "failed"}}failed{{else}}idle{{end}}"></span>
+        Chat with Devin
+      </h1>
+      <div class="mt-2 flex flex-wrap items-center gap-2 text-xs">
         <span class="pill {{if eq (printf "%s" .Key.Plan) "trial"}}bg-amber-900/40 text-amber-200
                           {{else if eq (printf "%s" .Key.Plan) "free"}}bg-sky-900/40 text-sky-200
-                          {{else}}bg-emerald-900/40 text-emerald-200{{end}}">{{.Key.Label}} · {{.Key.Plan}}</span>
-        <span class="text-slate-600">·</span>
-        <span>Status:</span>
+                          {{else}}bg-emerald-900/40 text-emerald-200{{end}}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3 h-3"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          {{.Key.Label}} · {{.Key.Plan}}
+        </span>
         <span class="pill {{if eq .StatusLabel "running"}}bg-emerald-900/40 text-emerald-200
                           {{else if eq .StatusLabel "completed"}}bg-sky-900/40 text-sky-200
                           {{else if eq .StatusLabel "failed"}}bg-rose-900/40 text-rose-200
@@ -21,8 +25,7 @@
                           {{else if eq .StatusLabel "handoff_done"}}bg-indigo-900/40 text-indigo-200
                           {{else}}bg-slate-800 text-slate-300{{end}}">{{.StatusLabel}}</span>
         {{if .Session.DevinSessionID}}
-        <span class="text-slate-600">·</span>
-        <span class="font-mono text-slate-500">{{.Session.DevinSessionID}}</span>
+        <span class="font-mono text-[10px] text-slate-600">{{.Session.DevinSessionID}}</span>
         {{end}}
       </div>
     </div>
@@ -201,61 +204,103 @@
      hx-swap="outerHTML">
   {{if not .MessageViews}}
   <div class="rounded-md border border-dashed border-slate-700 bg-slate-900/30 px-4 py-8 text-center text-sm text-slate-400">
-    Waiting for Devin's first message…
+    {{if or (eq (printf "%s" .Session.Status) "running") (eq (printf "%s" .Session.Status) "blocked")}}
+    <div class="devin-thinking">
+      <div class="devin-thinking-avatar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5 animate-spin"><path d="M12 2v4m0 12v4m-7.07-3.93l2.83-2.83m8.48-8.48l2.83-2.83M2 12h4m12 0h4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83"/></svg>
+      </div>
+      <span>Devin is working on your task...</span>
+    </div>
+    {{else}}
+    Waiting for Devin's first message...
+    {{end}}
   </div>
   {{else}}
-  <div class="space-y-4">
+  <div class="space-y-3">
     {{range .MessageViews}}
       {{$m := .Message}}
       {{if eq (printf "%s" $m.Role) "user"}}
+      <!-- User message -->
       <div class="flex justify-end" data-msg-id="{{$m.ID}}">
-        <div class="max-w-[80%] rounded-lg bg-indigo-600/90 px-4 py-2 text-sm text-white shadow group relative">
-          {{if $m.Pinned}}<span class="absolute -top-2 -left-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-amber-400 text-[10px] font-bold text-slate-900" title="Pinned">★</span>{{end}}
-          <div class="whitespace-pre-wrap">{{$m.Content}}</div>
-          <div class="mt-1 flex items-center justify-end gap-2 text-[10px] text-indigo-100/80">
+        <div class="chat-bubble chat-bubble-user group relative">
+          {{if $m.Pinned}}<span class="chat-pin-badge" title="Pinned">&#9733;</span>{{end}}
+          <div class="chat-bubble-header-user">
+            <span class="font-medium">You</span>
+            <span class="chat-ts">{{$m.Timestamp.Format "15:04:05"}}</span>
+          </div>
+          <div class="whitespace-pre-wrap mt-1">{{$m.Content}}</div>
+          <div class="chat-actions-row justify-end">
             <button type="button"
                     hx-post="/messages/{{$m.ID}}/{{if $m.Pinned}}unpin{{else}}pin{{end}}"
                     hx-swap="none"
                     hx-on::after-request="htmx.ajax('GET','/sessions/{{$.Session.ID}}/messages','#chat-stream')"
-                    class="opacity-0 group-hover:opacity-100 transition rounded border border-indigo-300/40 px-1.5 py-0.5 hover:bg-indigo-500">
+                    class="chat-action-btn">
               {{if $m.Pinned}}Unpin{{else}}Pin{{end}}
             </button>
-            <span>{{$m.Timestamp.Format "15:04:05"}}</span>
           </div>
         </div>
       </div>
       {{else if eq (printf "%s" $m.Role) "assistant"}}
+      <!-- Devin message -->
       <div class="flex items-start gap-3 group" data-msg-id="{{$m.ID}}">
-        <div class="flex h-8 w-8 flex-none items-center justify-center rounded-full bg-slate-800 text-xs font-semibold text-indigo-300">D</div>
-        <div class="max-w-[80%] rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm text-slate-100 shadow relative">
-          {{if $m.Pinned}}<span class="absolute -top-2 -left-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-amber-400 text-[10px] font-bold text-slate-900" title="Pinned">★</span>{{end}}
-          <div class="text-xs font-semibold text-indigo-300">Devin</div>
-          <div class="mt-1" data-md data-md-key="{{$m.ID}}">{{$m.Content}}</div>
+        <div class="devin-avatar">D</div>
+        <div class="chat-bubble chat-bubble-devin relative flex-1 min-w-0">
+          {{if $m.Pinned}}<span class="chat-pin-badge" title="Pinned">&#9733;</span>{{end}}
+          <div class="chat-bubble-header-devin">
+            <div class="flex items-center gap-2">
+              <span class="font-semibold text-indigo-300">Devin</span>
+              <span class="devin-role-badge">assistant</span>
+            </div>
+            <span class="chat-ts">{{$m.Timestamp.Format "15:04:05"}}</span>
+          </div>
+          <div class="mt-2 devin-msg-body" data-md data-md-key="{{$m.ID}}">{{$m.Content}}</div>
           {{template "chat_attachments" .}}
-          <div class="mt-1 flex items-center justify-between gap-2 text-[10px] text-slate-500">
-            <span>{{$m.Timestamp.Format "15:04:05"}}</span>
+          <div class="chat-actions-row">
             <button type="button"
                     hx-post="/messages/{{$m.ID}}/{{if $m.Pinned}}unpin{{else}}pin{{end}}"
                     hx-swap="none"
                     hx-on::after-request="htmx.ajax('GET','/sessions/{{$.Session.ID}}/messages','#chat-stream')"
-                    class="opacity-0 group-hover:opacity-100 transition rounded border border-slate-700 px-1.5 py-0.5 text-slate-300 hover:bg-slate-800">
+                    class="chat-action-btn">
               {{if $m.Pinned}}Unpin{{else}}Pin{{end}}
             </button>
           </div>
         </div>
       </div>
       {{else}}
-      <div class="flex justify-center" data-msg-id="{{$m.ID}}">
-        <div class="max-w-[80%] rounded-md border border-slate-800 bg-slate-900/40 px-3 py-1.5 text-xs italic text-slate-400">
+      <!-- System / status message -->
+      <div class="flex items-center gap-2 px-4 py-1" data-msg-id="{{$m.ID}}">
+        <div class="flex-1 h-px bg-slate-800"></div>
+        <div class="chat-system-msg">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3 h-3"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
           {{$m.Content}}
         </div>
+        <div class="flex-1 h-px bg-slate-800"></div>
       </div>
       {{end}}
     {{end}}
   </div>
   {{end}}
+
+  {{/* Thinking indicator when session is actively running */}}
+  {{if or (eq (printf "%s" .Session.Status) "running") (eq (printf "%s" .Session.Status) "blocked")}}
+  {{if .MessageViews}}
+  <div class="devin-thinking mt-4">
+    <div class="devin-avatar devin-avatar-sm">D</div>
+    <div class="devin-thinking-content">
+      <span class="text-indigo-300 font-medium text-xs">Devin</span>
+      <div class="devin-thinking-dots">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      </div>
+    </div>
+  </div>
+  {{end}}
+  {{end}}
+
   {{if .Session.LastPolledAt}}
-  <p class="mt-6 text-center text-[10px] text-slate-600">Last synced {{.Session.LastPolledAt.Format "15:04:05"}}</p>
+  <div class="mt-4 flex items-center justify-center gap-2 text-[10px] text-slate-600">
+    <div class="w-1.5 h-1.5 rounded-full {{if or (eq (printf "%s" .Session.Status) "running") (eq (printf "%s" .Session.Status) "blocked")}}bg-emerald-500 animate-pulse{{else}}bg-slate-600{{end}}"></div>
+    Last synced {{.Session.LastPolledAt.Format "15:04:05"}}
+  </div>
   {{end}}
 </div>
 {{end}}

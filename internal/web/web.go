@@ -82,12 +82,8 @@ var pageContentFiles = map[string]string{
 	"session_chat":     "templates/session_chat.html",
 	"session_files":    "templates/session_files.html",
 	"artifact_preview": "templates/artifact_preview.html",
-	"keys_index":      "templates/keys_index.html",
-	"tasks_index":     "templates/tasks_index.html",
-	"task_detail":     "templates/task_detail.html",
-	"session_chat":    "templates/session_chat.html",
-	"session_files":   "templates/session_files.html",
-	"schedules_index": "templates/schedules_index.html",
+	"schedules_index":  "templates/schedules_index.html",
+	"dashboard":        "templates/dashboard.html",
 	// PR-13: pipeline editor (E43.1).
 	"pipelines_index": "templates/pipelines_index.html",
 	"pipeline_editor": "templates/pipeline_editor.html",
@@ -947,9 +943,9 @@ func (s *Server) handleSessionFiles(w http.ResponseWriter, r *http.Request) {
 			versionGroups = groups
 		}
 	}
-	var dir string
+	var artifactsDir string
 	if root := s.manager.ArtifactsRoot(); root != "" {
-		dir = filepath.Join(root, sess.ID)
+		artifactsDir = filepath.Join(root, sess.ID)
 	}
 	s.renderPage(w, r, "session_files", pageData{
 		Title:          "Files \u00b7 " + task.Title,
@@ -961,6 +957,7 @@ func (s *Server) handleSessionFiles(w http.ResponseWriter, r *http.Request) {
 		Artifacts:      list,
 		ArtifactGroups: groupArtifacts(list),
 		VersionGroups:  versionGroups,
+		ArtifactsDir:   artifactsDir,
 		Flash:          r.URL.Query().Get("flash"),
 	})
 }
@@ -1447,6 +1444,17 @@ type pageData struct {
 
 	// Observability (PR-14).
 	TasksAll []tasks.Task
+
+	// Artifact preview (PR-17).
+	Artifact      artifacts.Artifact
+	PreviewLang   string
+	PreviewBinary bool
+	PreviewError  string
+	PreviewBody   string
+	PreviewTooBig bool
+
+	// Session files — local path to artifacts directory.
+	ArtifactsDir string
 }
 
 // dashStats is the bento KPI bundle for the dashboard.

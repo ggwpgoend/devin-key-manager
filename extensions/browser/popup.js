@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 
 chrome.storage.local.get(["managerBaseURL"], r => {
-  $("baseURL").value = (r && r.managerBaseURL) || "http://localhost:5179";
+  $("baseURL").value = (r && r.managerBaseURL) || "http://localhost:8765";
 });
 
 $("saveBase").addEventListener("click", () => {
