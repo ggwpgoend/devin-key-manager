@@ -129,6 +129,22 @@
     </form>
   </details>
 
+  <!-- Session status banner -->
+  <div class="devin-session-banner {{.StatusLabel}} mt-3">
+    <span class="devin-status-dot {{if eq .StatusLabel "running"}}running{{else if eq .StatusLabel "completed"}}completed{{else if eq .StatusLabel "failed"}}failed{{else}}idle{{end}}"></span>
+    {{if eq .StatusLabel "running"}}Devin is working on this task...
+    {{else if eq .StatusLabel "blocked"}}Devin is waiting for input
+    {{else if eq .StatusLabel "completed"}}Task completed
+    {{else if eq .StatusLabel "failed"}}Task failed
+    {{else if eq .StatusLabel "quota_exhausted"}}Key quota exhausted — rotate to continue
+    {{else if eq .StatusLabel "handoff_done"}}Session handed off to new key
+    {{else}}Session idle
+    {{end}}
+    {{if .Session.DevinSessionID}}
+    <span class="ml-auto font-mono text-[10px]" style="opacity:0.5">{{.Session.DevinSessionID}}</span>
+    {{end}}
+  </div>
+
   <!-- Messages (HTMX-polled).
        The scroll container (#chat-scroll) is intentionally OUTSIDE the
        polled wrapper so each 4-second swap doesn't reset scroll position
@@ -286,10 +302,10 @@
        This prevents dots from staying stuck after Devin has already replied. */}}
   {{if or (eq (printf "%s" .Session.Status) "running") (eq (printf "%s" .Session.Status) "blocked")}}
   {{if and .MessageViews .LastMsgIsUser}}
-  <div class="devin-thinking mt-4">
+  <div class="devin-thinking mt-4" style="padding:10px 14px;background:rgba(74,122,155,0.04);border-radius:10px;border:1px solid rgba(74,122,155,0.08)">
     <div class="devin-avatar devin-avatar-sm">D</div>
     <div class="devin-thinking-content">
-      <span class="text-indigo-300 font-medium text-xs">Devin</span>
+      <span class="text-indigo-300 font-medium text-xs">Devin is thinking</span>
       <div class="devin-thinking-dots">
         <span class="dot"></span><span class="dot"></span><span class="dot"></span>
       </div>

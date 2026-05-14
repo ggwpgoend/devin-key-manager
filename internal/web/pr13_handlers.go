@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ggwpgoend/devin-key-manager/internal/pipelines"
+	"github.com/ggwpgoend/devin-key-manager/internal/version"
 )
 
 // PR-13 (E43.1) HTTP layer for the pipeline editor. Handlers serve two
@@ -41,11 +42,13 @@ func (s *Server) handlePipelinesIndex(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, pipelinesIndexRow{Pipeline: p, NodeCount: len(nodes)})
 	}
 	s.renderPage(w, r, "pipelines_index", pageData{
-		Title:      "Pipelines",
-		Active:     "pipelines",
-		NavCurrent: "pipelines",
-		Flash:      r.URL.Query().Get("flash"),
-		Pipelines:  rows,
+		Title:         "Pipelines",
+		Active:        "pipelines",
+		NavCurrent:    "pipelines",
+		Version:       version.Version,
+		MasterKeyPath: s.masterKeyPath,
+		Flash:         r.URL.Query().Get("flash"),
+		Pipelines:     rows,
 	})
 }
 
@@ -86,13 +89,15 @@ func (s *Server) handlePipelineEditor(w http.ResponseWriter, r *http.Request) {
 	graphBytes, _ := json.Marshal(serializeGraph(g))
 	runsBytes, _ := json.Marshal(serializeRuns(runs))
 	s.renderPage(w, r, "pipeline_editor", pageData{
-		Title:       g.Pipeline.Name,
-		Active:      "pipelines",
-		NavCurrent:  "pipelines",
-		Flash:       r.URL.Query().Get("flash"),
-		PipelineRow: g.Pipeline,
-		GraphJSON:   string(graphBytes),
-		RunsJSON:    string(runsBytes),
+		Title:         g.Pipeline.Name,
+		Active:        "pipelines",
+		NavCurrent:    "pipelines",
+		Version:       version.Version,
+		MasterKeyPath: s.masterKeyPath,
+		Flash:         r.URL.Query().Get("flash"),
+		PipelineRow:   g.Pipeline,
+		GraphJSON:     string(graphBytes),
+		RunsJSON:      string(runsBytes),
 	})
 }
 
