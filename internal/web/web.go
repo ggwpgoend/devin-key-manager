@@ -26,6 +26,7 @@ import (
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/manager"
 	"github.com/ggwpgoend/devin-key-manager/internal/notifications"
+	"github.com/ggwpgoend/devin-key-manager/internal/observability"
 	"github.com/ggwpgoend/devin-key-manager/internal/pipelines"
 	"github.com/ggwpgoend/devin-key-manager/internal/schedules"
 	"github.com/ggwpgoend/devin-key-manager/internal/sessions"
@@ -57,6 +58,7 @@ type Server struct {
 	attachments   *attachments.Repo
 	pipelines     *pipelines.Repo
 	pipelineExec  *pipelines.Executor
+	observability *observability.Repo
 	bus           *events.Bus
 	manager       *manager.Manager
 	pages         map[string]*template.Template
@@ -79,6 +81,8 @@ var pageContentFiles = map[string]string{
 	// PR-13: pipeline editor (E43.1).
 	"pipelines_index": "templates/pipelines_index.html",
 	"pipeline_editor": "templates/pipeline_editor.html",
+	// PR-14: observability tab.
+	"observability": "templates/observability.html",
 }
 
 // partialFiles enumerates the HTMX partial templates rendered without the
@@ -103,6 +107,7 @@ type Deps struct {
 	Attachments   *attachments.Repo
 	Pipelines     *pipelines.Repo
 	PipelineExec  *pipelines.Executor
+	Observability *observability.Repo
 	Bus           *events.Bus
 	Manager       *manager.Manager
 }
@@ -156,6 +161,7 @@ func NewServer(logger *slog.Logger, deps Deps, masterKeyPath string) (*Server, e
 		attachments:   deps.Attachments,
 		pipelines:     deps.Pipelines,
 		pipelineExec:  deps.PipelineExec,
+		observability: deps.Observability,
 		bus:           deps.Bus,
 		manager:       deps.Manager,
 		pages:         pages,
@@ -268,6 +274,16 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/{id}/runs", s.handlePipelineStartRun)
 		r.Get("/{id}/runs", s.handlePipelineListRuns)
 	})
+	// PR-14: observability tab. UI page + JSON endpoints for time-series
+	// (sessions, messages, handoffs, tasks) and per-task session-graphs.
+	r.Get("/observability", s.handleObservabilityIndex)
+	r.Route("/api/observability", func(r chi.Router) {
+		r.Get("/timeseries", s.handleObservabilityTimeseries)
+		r.Get("/state-breakdown", s.handleObservabilityStateBreakdown)
+		r.Get("/top-keys", s.handleObservabilityTopKeys)
+		r.Get("/session-graph/{task_id}", s.handleObservabilitySessionGraph)
+	})
+
 	r.Route("/pipeline-runs", func(r chi.Router) {
 		r.Get("/{run_id}", s.handlePipelineRunDetail)
 		r.Post("/{run_id}/rollback", s.handlePipelineRunRollback)
@@ -1060,6 +1076,9 @@ type pageData struct {
 	GraphJSON     string
 	RunsJSON      string
 	NavCurrent    string
+
+	// Observability (PR-14).
+	TasksAll []tasks.Task
 }
 
 // dashStats is the bento KPI bundle for the dashboard.
