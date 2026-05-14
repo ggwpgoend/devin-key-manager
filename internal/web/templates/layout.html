@@ -246,20 +246,51 @@
       }
       document.addEventListener("scroll", recordSticky, true);
 
+      // Post-process rendered Devin messages: wrap long code blocks in
+      // collapsible details and detect tool-call patterns.
+      function enhanceDevinMessages(root) {
+        (root || document).querySelectorAll('.devin-msg-body[data-md-done]:not([data-enhanced])').forEach(function(el) {
+          el.setAttribute('data-enhanced', '1');
+          // Wrap code blocks taller than 200px in collapsible details
+          el.querySelectorAll('pre').forEach(function(pre) {
+            if (pre.scrollHeight > 200) {
+              var lang = '';
+              var code = pre.querySelector('code');
+              if (code && code.className) {
+                var m = code.className.match(/language-(\S+)/);
+                if (m) lang = m[1];
+              }
+              var det = document.createElement('details');
+              det.className = 'devin-tool-call';
+              var sum = document.createElement('summary');
+              sum.textContent = lang ? 'Code: ' + lang : 'Code output';
+              det.appendChild(sum);
+              var body = document.createElement('div');
+              body.className = 'devin-tool-body';
+              pre.parentNode.insertBefore(det, pre);
+              body.appendChild(pre);
+              det.appendChild(body);
+            }
+          });
+        });
+      }
+
       window.renderMarkdown = renderAll;
       document.addEventListener("DOMContentLoaded", function () {
         renderAll(document);
+        enhanceDevinMessages(document);
         applySticky();
       });
       document.addEventListener("htmx:beforeSwap", function () { recordSticky(); });
       document.addEventListener("htmx:afterSwap", function (evt) {
         renderAll(evt.target);
+        enhanceDevinMessages(evt.target);
         applySticky();
       });
     })();
   </script>
-  <footer class="storm-container" style="padding-top:12px;padding-bottom:90px;color:var(--text-dim);font-size:0.65rem;text-align:center;opacity:0.5;pointer-events:none">
-    Local dashboard · {{.MasterKeyPath}}
+  <footer class="storm-container" style="padding-top:8px;padding-bottom:90px;color:var(--text-dim);font-size:0.6rem;text-align:center;opacity:0.3;pointer-events:none;user-select:none">
+    Local dashboard{{if .Version}} · {{.Version}}{{end}}
   </footer>
   <script>
     // PR-8: lightweight browser-notification poller. We hit /events/since

@@ -468,3 +468,81 @@ body::after{
 .devin-status-dot.completed{background:var(--accent-flash)}
 .devin-status-dot.failed{background:var(--red-bright)}
 .devin-status-dot.idle{background:var(--text-dim)}
+
+/* ======== DEVIN.AI-STYLE ACTIVITY SECTIONS ======== */
+
+/* Thinking section — collapsible block showing Devin's reasoning */
+.devin-thinking-section{
+  margin:6px 0;border:1px solid rgba(74,122,155,0.12);border-radius:8px;
+  overflow:hidden;background:rgba(74,122,155,0.03);
+}
+.devin-thinking-section summary{
+  cursor:pointer;padding:6px 12px;font-size:0.72rem;
+  font-weight:500;color:var(--accent-flash);
+  display:flex;align-items:center;gap:6px;
+  user-select:none;list-style:none;
+}
+.devin-thinking-section summary::-webkit-details-marker{display:none}
+.devin-thinking-section summary::before{
+  content:'💭';font-size:11px;
+}
+.devin-thinking-section summary::after{
+  content:'▸';margin-left:auto;font-size:10px;transition:transform 0.15s;color:var(--text-dim);
+}
+.devin-thinking-section[open] summary::after{transform:rotate(90deg)}
+.devin-thinking-section .thinking-body{
+  padding:8px 12px;font-size:0.78rem;border-top:1px solid rgba(74,122,155,0.08);
+  color:var(--text);line-height:1.5;font-style:italic;
+}
+
+/* Action step — inline activity indicator */
+.devin-action-step{
+  display:flex;align-items:flex-start;gap:8px;
+  padding:4px 0;font-size:0.75rem;color:var(--text);
+}
+.devin-action-step::before{
+  content:'';flex-shrink:0;width:6px;height:6px;border-radius:50%;
+  background:var(--accent);margin-top:5px;
+}
+.devin-action-step.completed::before{background:var(--green-bright)}
+.devin-action-step.failed::before{background:var(--red-bright)}
+.devin-action-step.running::before{background:var(--yellow-bright);animation:storm-blink 1.5s ease-in-out infinite}
+
+/* Session status banner */
+.devin-session-banner{
+  display:flex;align-items:center;gap:8px;
+  padding:8px 14px;border-radius:8px;font-size:0.75rem;
+  margin-bottom:8px;
+}
+.devin-session-banner.running{
+  background:rgba(61,122,95,0.08);border:1px solid rgba(61,122,95,0.15);color:var(--green-bright);
+}
+.devin-session-banner.completed{
+  background:rgba(74,122,155,0.08);border:1px solid rgba(74,122,155,0.15);color:var(--accent-flash);
+}
+.devin-session-banner.failed{
+  background:rgba(139,69,69,0.08);border:1px solid rgba(139,69,69,0.15);color:var(--red-bright);
+}
+.devin-session-banner.quota_exhausted{
+  background:rgba(139,122,61,0.08);border:1px solid rgba(139,122,61,0.15);color:var(--yellow-bright);
+}
+
+/* Chat timestamp separator */
+.chat-time-sep{
+  display:flex;align-items:center;gap:12px;
+  margin:12px 0 8px;font-size:0.6rem;color:var(--text-dim);
+}
+.chat-time-sep::before,.chat-time-sep::after{
+  content:'';flex:1;height:1px;background:var(--border);
+}
+
+/* Enhanced message grouping */
+.devin-msg-group{
+  border-left:2px solid var(--border);
+  padding-left:12px;margin-left:14px;
+}
+.devin-msg-group:hover{border-left-color:var(--accent)}
+
+@keyframes storm-blink{
+  0%,100%{opacity:1}50%{opacity:0.4}
+}
