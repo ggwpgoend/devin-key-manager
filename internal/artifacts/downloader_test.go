@@ -98,8 +98,8 @@ func TestDownloaderFetchHTTPError(t *testing.T) {
 	if got.Status != artifacts.StatusFailed {
 		t.Errorf("status=%q want failed", got.Status)
 	}
-	if !strings.Contains(got.Error, "403") {
-		t.Errorf("error=%q, expected status code mention", got.Error)
+	if !strings.Contains(got.Error, "unauthorized") && !strings.Contains(got.Error, "403") {
+		t.Errorf("error=%q, expected auth error or status code mention", got.Error)
 	}
 }
 

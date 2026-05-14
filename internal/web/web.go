@@ -1315,6 +1315,11 @@ func (s *Server) loadSessionView(ctx context.Context, id string) (pageData, erro
 		decorated = append(decorated, mv)
 	}
 
+	lastIsUser := false
+	if n := len(msgs); n > 0 {
+		lastIsUser = msgs[n-1].Role == sessions.RoleUser
+	}
+
 	return pageData{
 		Title:           "Chat · " + task.Title,
 		Active:          "tasks",
@@ -1327,6 +1332,7 @@ func (s *Server) loadSessionView(ctx context.Context, id string) (pageData, erro
 		MessageViews:    decorated,
 		Artifacts:       art,
 		StatusLabel:     string(sess.Status),
+		LastMsgIsUser:   lastIsUser,
 		Composer:        composer,
 		InboundHandoff:  inbound,
 		OutboundHandoff: outbound,
@@ -1414,7 +1420,8 @@ type pageData struct {
 	// session — surfaces the "different versions of the same file"
 	// pattern that Devin produces when iterating on output.
 	VersionGroups []artifacts.VersionGroup
-	StatusLabel   string
+	StatusLabel    string
+	LastMsgIsUser  bool
 	Composer        composerData
 	InboundHandoff  handoffs.Handoff
 	OutboundHandoff handoffs.Handoff
