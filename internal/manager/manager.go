@@ -17,6 +17,7 @@ import (
 
 	"github.com/ggwpgoend/devin-key-manager/internal/artifacts"
 	"github.com/ggwpgoend/devin-key-manager/internal/devin"
+	"github.com/ggwpgoend/devin-key-manager/internal/events"
 	"github.com/ggwpgoend/devin-key-manager/internal/handoffs"
 	"github.com/ggwpgoend/devin-key-manager/internal/keys"
 	"github.com/ggwpgoend/devin-key-manager/internal/notifications"
@@ -46,6 +47,7 @@ type Manager struct {
 	artifacts  *artifacts.Repo
 	downloader *artifacts.Downloader
 	notifs     *notifications.Repo
+	bus        *events.Bus
 	clientOf   ClientFactory
 	now        func() time.Time
 }
@@ -58,6 +60,10 @@ type Options struct {
 	Artifacts     *artifacts.Repo
 	Downloader    *artifacts.Downloader
 	Notifications *notifications.Repo
+	// Bus is an optional in-process event broker. When non-nil, the
+	// manager publishes state changes (key/session/task/artifact/handoff)
+	// so the web layer can fan them out over SSE for live UI updates.
+	Bus *events.Bus
 }
 
 // New constructs a Manager. Pass a non-nil handoffs.Repo so the quota
@@ -85,9 +91,24 @@ func New(k *keys.Repo, t *tasks.Repo, s *sessions.Repo, h *handoffs.Repo, opts O
 		artifacts:  opts.Artifacts,
 		downloader: opts.Downloader,
 		notifs:     opts.Notifications,
+		bus:        opts.Bus,
 		clientOf:   factory,
 		now:        now,
 	}
+}
+
+// SetBus attaches an event bus after construction. Used in tests and in
+// scenarios where the bus is constructed after the manager.
+func (m *Manager) SetBus(b *events.Bus) { m.bus = b }
+
+// publish is a nil-safe helper around bus.Publish so handler code stays
+// terse: every state-change path can `m.publish(events.KindXxx, …)`
+// without caring whether the bus was wired.
+func (m *Manager) publish(kind events.Kind, data map[string]any) {
+	if m == nil || m.bus == nil {
+		return
+	}
+	m.bus.Publish(kind, data)
 }
 
 // SetNotifications attaches the notification event store after construction.
@@ -144,6 +165,7 @@ func (m *Manager) StartTask(ctx context.Context, in StartTaskInput) (StartTaskRe
 		_ = m.tasks.SetStatus(ctx, task.ID, tasks.StatusFailed)
 		return StartTaskResult{}, fmt.Errorf("manager: create local session: %w", err)
 	}
+	_ = m.keys.BumpSessionsCount(ctx, key.ID)
 
 	plaintext, err := m.keys.Reveal(ctx, key.ID)
 	if err != nil {
@@ -158,6 +180,7 @@ func (m *Manager) StartTask(ctx context.Context, in StartTaskInput) (StartTaskRe
 		Title:  in.Title,
 	})
 	if err != nil {
+		_ = m.keys.RecordError(ctx, key.ID, err.Error())
 		reason := "create devin session: " + err.Error()
 		status := sessions.StatusFailed
 		if errors.Is(err, devin.ErrQuotaExhausted) {
@@ -466,16 +489,34 @@ func (m *Manager) notifyNewDevinMessages(ctx context.Context, sess sessions.Sess
 	if delta := nowCount - prevCount; delta > 1 {
 		title = fmt.Sprintf("Devin replied (%d new)", delta)
 	}
-	if _, err := m.notifs.Append(ctx, notifications.AppendInput{
+	evID, err := m.notifs.Append(ctx, notifications.AppendInput{
 		Kind:             notifications.KindDevinMessage,
 		Title:            title,
 		Body:             lastBody,
 		URL:              "/sessions/" + sess.ID,
 		RelatedTaskID:    sess.TaskID,
 		RelatedSessionID: sess.ID,
-	}); err != nil {
+	})
+	if err != nil {
 		m.logger.Warn("notify devin message", "err", err)
 	}
+	// Two SSE publishes: one as a typed state-change event (UI subscribers),
+	// one as a generic notification (browser Notification toast).
+	m.publish(events.KindSessionMessage, map[string]any{
+		"session_id": sess.ID,
+		"task_id":    sess.TaskID,
+		"count":      nowCount,
+		"delta":      nowCount - prevCount,
+		"title":      title,
+		"preview":    lastBody,
+	})
+	m.publish(events.KindNotification, map[string]any{
+		"event_id": evID,
+		"kind":     string(notifications.KindDevinMessage),
+		"title":    title,
+		"body":     lastBody,
+		"url":      "/sessions/" + sess.ID,
+	})
 }
 
 // NotifyHandoff appends a notification event for a quota-driven rotation.
@@ -484,16 +525,30 @@ func (m *Manager) NotifyHandoff(ctx context.Context, fromSess, toSess sessions.S
 	if m.notifs == nil {
 		return
 	}
-	if _, err := m.notifs.Append(ctx, notifications.AppendInput{
+	evID, err := m.notifs.Append(ctx, notifications.AppendInput{
 		Kind:             notifications.KindHandoff,
 		Title:            "Handoff to new key",
 		Body:             reason,
 		URL:              "/sessions/" + toSess.ID,
 		RelatedTaskID:    fromSess.TaskID,
 		RelatedSessionID: toSess.ID,
-	}); err != nil {
+	})
+	if err != nil {
 		m.logger.Warn("notify handoff", "err", err)
 	}
+	m.publish(events.KindHandoffLinked, map[string]any{
+		"task_id":         fromSess.TaskID,
+		"from_session_id": fromSess.ID,
+		"to_session_id":   toSess.ID,
+		"reason":          reason,
+	})
+	m.publish(events.KindNotification, map[string]any{
+		"event_id": evID,
+		"kind":     string(notifications.KindHandoff),
+		"title":    "Handoff to new key",
+		"body":     reason,
+		"url":      "/sessions/" + toSess.ID,
+	})
 }
 
 // deriveTitle returns a short title from the first line of the prompt.

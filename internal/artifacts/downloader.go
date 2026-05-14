@@ -26,6 +26,12 @@ const MaxArtifactBytes int64 = 256 << 20 // 256 MiB
 // authenticate without ever storing plaintext keys on its struct.
 type BearerProvider func(ctx context.Context, sessionID string) (string, error)
 
+// ReadyCallback is invoked when an artifact transitions to ready. It runs on
+// the downloader's goroutine after the database row is updated. Errors are
+// logged but not propagated — the artifact is still ready from the system's
+// perspective. Intended for cache invalidation, event publishing, etc.
+type ReadyCallback func(ctx context.Context, a Artifact)
+
 // Downloader streams remote attachment URLs to <root>/<session_id>/<artifact_id><ext>
 // and flips the artifact row to ready/failed in the Repo as appropriate. One
 // Downloader serves the whole process; concurrent Fetch calls are safe.
@@ -36,10 +42,14 @@ type Downloader struct {
 	client  *http.Client
 	logger  *slog.Logger
 	maxSize int64
+	onReady ReadyCallback
 
 	mu       sync.Mutex
 	inflight map[string]struct{}
 }
+
+// SetOnReady installs a post-ready hook. Safe to call before any Enqueue.
+func (d *Downloader) SetOnReady(cb ReadyCallback) { d.onReady = cb }
 
 // NewDownloader constructs a Downloader. root is the absolute or relative
 // directory under which per-session subfolders are created.
@@ -197,6 +207,15 @@ func (d *Downloader) Fetch(ctx context.Context, a Artifact) error {
 		Filename:    filename,
 	}); err != nil {
 		return fmt.Errorf("mark ready: %w", err)
+	}
+	if d.onReady != nil {
+		ready := a
+		ready.LocalPath = finalPath
+		ready.ContentType = contentType
+		ready.SizeBytes = n
+		ready.Filename = filename
+		ready.Status = StatusReady
+		d.onReady(ctx, ready)
 	}
 	d.logger.Info("artifacts: downloaded",
 		"artifact_id", a.ID,

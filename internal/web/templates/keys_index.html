@@ -59,6 +59,7 @@
         <th class="px-4 py-3">Plan</th>
         <th class="px-4 py-3">State</th>
         <th class="px-4 py-3">Fingerprint</th>
+        <th class="px-4 py-3" title="Total Devin API requests made on this key. Sessions are counted separately and shown in tooltip.">Reqs</th>
         <th class="px-4 py-3">Last used</th>
         <th class="px-4 py-3">Last checked</th>
         <th class="px-4 py-3 text-right">Actions</th>
@@ -97,6 +98,18 @@
           </div>
         </td>
         <td class="px-4 py-3 font-mono text-xs text-slate-400">{{.MaskedFingerprint}}</td>
+        <td class="px-4 py-3 text-slate-400">
+          <div class="flex items-center gap-2"
+               title="{{.SessionsCountTotal}} sessions opened{{if .ActivatedAt}} • first activated {{.ActivatedAt.Format "2006-01-02 15:04"}}{{end}}{{if ne .LastErrorMessage ""}} • last error: {{.LastErrorMessage}}{{end}}">
+            <span class="font-mono">{{.RequestCount}}</span>
+            {{if gt .SessionsCountTotal 0}}
+              <span class="text-[10px] text-slate-500">/ {{.SessionsCountTotal}}s</span>
+            {{end}}
+            {{if ne .LastErrorMessage ""}}
+              <span class="text-rose-400" title="{{.LastErrorMessage}}">!</span>
+            {{end}}
+          </div>
+        </td>
         <td class="px-4 py-3 text-slate-400">
           {{if .LastUsedAt}}{{.LastUsedAt.Format "2006-01-02 15:04"}}{{else}}—{{end}}
         </td>
