@@ -1,0 +1,78 @@
+{{define "keys_bulk_results"}}
+<div class="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm"
+     hx-target="this"
+     hx-swap="outerHTML">
+  <div class="w-full max-w-3xl rounded-lg border border-slate-800 bg-slate-900 p-6 shadow-xl">
+    <div class="mb-4 flex items-center justify-between">
+      <h2 class="text-lg font-semibold">Bulk import — results</h2>
+      <button class="rounded-md p-1 text-slate-400 hover:text-white"
+              hx-get="/keys"
+              hx-target="body"
+              hx-swap="outerHTML">✕</button>
+    </div>
+
+    <div class="mb-4 flex flex-wrap gap-2 text-xs">
+      <span class="inline-flex items-center rounded-full bg-emerald-500/15 px-2.5 py-1 text-emerald-300">
+        {{.Created}} created
+      </span>
+      <span class="inline-flex items-center rounded-full bg-amber-500/15 px-2.5 py-1 text-amber-300">
+        {{.Duplicate}} duplicate
+      </span>
+      <span class="inline-flex items-center rounded-full bg-rose-500/15 px-2.5 py-1 text-rose-300">
+        {{.Unauthorized}} unauthorized
+      </span>
+      <span class="inline-flex items-center rounded-full bg-slate-500/15 px-2.5 py-1 text-slate-300">
+        {{.Bad}} bad input
+      </span>
+    </div>
+
+    <div class="max-h-[420px] overflow-y-auto rounded-md border border-slate-800">
+      <table class="min-w-full divide-y divide-slate-800 text-xs">
+        <thead class="bg-slate-900/60 text-left uppercase tracking-wider text-slate-400">
+          <tr>
+            <th class="px-3 py-2">Line</th>
+            <th class="px-3 py-2">Label</th>
+            <th class="px-3 py-2">Plan</th>
+            <th class="px-3 py-2">Outcome</th>
+            <th class="px-3 py-2">Detail</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800 bg-slate-900/30">
+          {{range .Results}}
+          <tr>
+            <td class="px-3 py-2 font-mono text-slate-500">{{.LineNo}}</td>
+            <td class="px-3 py-2 font-medium text-slate-100">{{.Label}}</td>
+            <td class="px-3 py-2">
+              {{if .Key.Plan}}<span class="font-mono">{{.Key.Plan}}</span>
+              {{else if .DetectedAs}}<span class="font-mono text-slate-400">{{.DetectedAs}}</span>
+              {{else}}<span class="text-slate-500">—</span>{{end}}
+            </td>
+            <td class="px-3 py-2">
+              {{if eq (printf "%s" .Outcome) "created"}}
+                <span class="inline-flex items-center rounded-full bg-emerald-500/15 px-2 py-0.5 font-medium text-emerald-300">created</span>
+              {{else if eq (printf "%s" .Outcome) "duplicate"}}
+                <span class="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 font-medium text-amber-300">duplicate</span>
+              {{else if eq (printf "%s" .Outcome) "unauthorized"}}
+                <span class="inline-flex items-center rounded-full bg-rose-500/15 px-2 py-0.5 font-medium text-rose-300">unauthorized</span>
+              {{else if eq (printf "%s" .Outcome) "unreachable"}}
+                <span class="inline-flex items-center rounded-full bg-slate-500/15 px-2 py-0.5 font-medium text-slate-300">unreachable</span>
+              {{else}}
+                <span class="inline-flex items-center rounded-full bg-rose-500/15 px-2 py-0.5 font-medium text-rose-300">{{.Outcome}}</span>
+              {{end}}
+            </td>
+            <td class="px-3 py-2 text-slate-400">{{.Error}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="mt-4 flex items-center justify-end gap-2">
+      <a href="/keys"
+         class="rounded-md bg-indigo-500 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-400">
+        Back to keys
+      </a>
+    </div>
+  </div>
+</div>
+{{end}}
