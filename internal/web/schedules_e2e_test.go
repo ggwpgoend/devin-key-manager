@@ -122,8 +122,9 @@ func TestSchedulesIndex_RendersNav(t *testing.T) {
 			t.Errorf("page missing %q", want)
 		}
 	}
-	// Nav active state shows Schedules with text-white class.
-	if !strings.Contains(body, `href="/schedules" class="text-white"`) {
+	// Nav active state shows Schedules in the floating dock with .active class
+	// (PR-11 switched from top-bar links to a bottom dock).
+	if !strings.Contains(body, `href="/schedules" class="dock-item active"`) {
 		t.Errorf("nav active state missing for schedules")
 	}
 }

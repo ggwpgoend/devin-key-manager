@@ -264,6 +264,35 @@ func (r *Repo) ListActive(ctx context.Context) ([]Session, error) {
 	return out, rows.Err()
 }
 
+// SessionStats summarises the session table for dashboard tiles.
+type SessionStats struct {
+	Total       int
+	Open        int
+	Closed      int
+	StartedLast time.Time
+	Last24h     int
+}
+
+// Stats returns aggregated session counts. Open = creating/running/blocked/handoff_pending.
+// Last24h = sessions where started_at within the last 24h.
+func (r *Repo) Stats(ctx context.Context) (SessionStats, error) {
+	var st SessionStats
+	row := r.db.QueryRowContext(ctx, `SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN status IN ('creating','running','blocked','handoff_pending') THEN 1 ELSE 0 END) AS open,
+        SUM(CASE WHEN status NOT IN ('creating','running','blocked','handoff_pending') THEN 1 ELSE 0 END) AS closed,
+        SUM(CASE WHEN started_at >= ? THEN 1 ELSE 0 END) AS last24h
+    FROM sessions`, r.now().Add(-24*time.Hour).UTC())
+	var open, closed, last24h sql.NullInt64
+	if err := row.Scan(&st.Total, &open, &closed, &last24h); err != nil {
+		return st, fmt.Errorf("sessions: stats: %w", err)
+	}
+	st.Open = int(open.Int64)
+	st.Closed = int(closed.Int64)
+	st.Last24h = int(last24h.Int64)
+	return st, nil
+}
+
 // AppendMessage inserts a message into the cache for a session. The caller
 // supplies the timestamp so messages reflected from Devin preserve their
 // original ordering even after a re-sync.
